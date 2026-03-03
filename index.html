@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>카드 밸런스 시뮬레이터</title>
+  <meta name="description" content="사이버펑크 카드 전투 게임 밸런스 시뮬레이션 앱 — 학습형 AI 기반 카드 가치 분석">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body>
+  <div class="app-container">
+
+    <!-- Header -->
+    <header class="app-header">
+      <h1 class="app-title">Card Balance Simulator</h1>
+      <p class="app-subtitle">학습형 AI 기반 카드 밸런스 분석 시뮬레이터</p>
+    </header>
+
+    <!-- Control Panel -->
+    <div class="control-panel">
+      <!-- 시뮬레이션 설정 -->
+      <div class="control-section">
+        <h3>⚙️ 시뮬레이션 설정</h3>
+        <div class="config-grid">
+          <div class="config-item">
+            <label>세대당 게임 수 <span class="config-hint">(×5 티어 매칭)</span></label>
+            <input type="number" id="games-per-gen" value="100" min="10" max="1000" step="10">
+          </div>
+          <div class="config-item">
+            <label>학습 세대 수</label>
+            <input type="number" id="generations" value="10" min="1" max="50">
+          </div>
+          <div class="config-item">
+            <label>덱 크기</label>
+            <input type="number" id="deck-size" value="20" min="10" max="40">
+          </div>
+          <div class="config-item">
+            <label>티어 제한</label>
+            <select id="tier-limit">
+              <option value="1">Tier 1</option>
+              <option value="2">Tier 2</option>
+              <option value="3">Tier 3</option>
+              <option value="4">Tier 4</option>
+              <option value="5" selected>Tier 5 (전체)</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btn-start">▶ 시뮬레이션 시작</button>
+          <button class="btn btn-danger" id="btn-stop" disabled>⏹ 중지</button>
+        </div>
+      </div>
+
+      <!-- 카드팩 선택 & I/O -->
+      <div class="control-section">
+        <h3>📦 카드팩 선택</h3>
+        <div id="pack-checkboxes">
+          <!-- 동적으로 채워짐 -->
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-secondary" id="btn-export">💾 데이터 내보내기</button>
+          <button class="btn btn-secondary" id="btn-import">📂 불러오기</button>
+          <input type="file" id="import-file" accept=".json" style="display:none">
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-container" id="progress-container">
+      <div class="progress-track">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-text" id="progress-text">대기 중...</div>
+    </div>
+
+    <!-- Gen Results (실시간) -->
+    <div class="gen-results" id="gen-results"></div>
+
+    <!-- Result Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="tierlist">🏆 밸류 티어</button>
+      <button class="tab-btn" data-tab="warnings">⚠️ 밸런스 경고</button>
+      <button class="tab-btn" data-tab="synergy">🧩 시너지 분석</button>
+      <button class="tab-btn" data-tab="crosspack">🔀 팩 교차</button>
+      <button class="tab-btn" data-tab="heatmap">🗺️ 티어 히트맵</button>
+      <button class="tab-btn" data-tab="packs">📦 팩별 통계</button>
+      <button class="tab-btn" data-tab="graph">📈 학습 그래프</button>
+      <button class="tab-btn" data-tab="battlelog">⚔️ 전투 로그</button>
+      <button class="tab-btn" data-tab="pool">🃏 카드 풀</button>
+    </div>
+
+    <!-- Tab Panels -->
+    <div class="tab-panel active" id="panel-tierlist">
+      <div id="tier-list">
+        <div class="empty-state">
+          <div class="icon">🏆</div>
+          <p>시뮬레이션을 실행하면 카드 밸류 티어 리스트가 여기에 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-synergy">
+      <div id="synergy-analysis">
+        <div class="empty-state">
+          <div class="icon">🧩</div>
+          <p>카드 조합별 시너지/안티시너지 분석이 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-crosspack">
+      <div id="crosspack-analysis">
+        <div class="empty-state">
+          <div class="icon">🔀</div>
+          <p>팩 구성별 승률 교차 분석이 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-heatmap">
+      <div id="tier-heatmap">
+        <div class="empty-state">
+          <div class="icon">🗺️</div>
+          <p>티어별 카드 밸류 히트맵이 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-warnings">
+      <div id="warnings">
+        <div class="empty-state">
+          <div class="icon">⚠️</div>
+          <p>시뮬레이션 결과에서 OP/UP 카드가 감지되면 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-packs">
+      <div id="pack-stats">
+        <div class="empty-state">
+          <div class="icon">📦</div>
+          <p>팩별 카드 사용률과 승률 통계가 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-graph">
+      <div class="graph-container">
+        <h3>세대별 승률 변화</h3>
+        <canvas id="learning-canvas"></canvas>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-battlelog">
+      <div id="battle-log">
+        <div class="empty-state">
+          <div class="icon">⚔️</div>
+          <p>시뮬레이션을 실행하면 전투별 덱 구성과 결과가 여기에 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="panel-pool">
+      <div id="card-pool">
+        <!-- 동적으로 채워짐 -->
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+
+</html>

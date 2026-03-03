@@ -1,0 +1,5 @@
+# card-simulator 관련 제외 파일
+parse_cards.js
+parsed_cards.json
+start.bat
+node_modules/
