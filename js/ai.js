@@ -46,7 +46,7 @@ export class CardAI {
         /** 학습 이력 */
         this.history = [];
         /** 학습 속도 (세대가 지날수록 감소) */
-        this.learningRate = 0.15;
+        this.learningRate = 0.3;
 
         this._initWeights();
     }
@@ -268,30 +268,19 @@ export class CardAI {
      * 핵심: "그 카드의 티어 Baseline 대비" 얼마나 기여했느냐로 조정
      */
     updateWeights(result, outcome) {
-        // 승리 시 → 사용한 카드들이 기여한 것 → 가중치 증가
-        // 패배 시 → 사용한 카드들이 부족한 것 → 가중치 감소 (단, Baseline 이하로는 느리게 감소)
-        const baseFactor = outcome === 'win' ? 0.06 : -0.04;
-
-        // 전투 중 카드의 실질 기여도 추정
-        const totalDamageTaken = result.cardUsageLog.length > 0
-            ? result.cardUsageLog[result.cardUsageLog.length - 1]?.enemyHpAfter || 0
-            : 0;
+        const baseFactor = outcome === 'win' ? 0.08 : -0.08;
 
         for (const log of result.cardUsageLog) {
             const current = this.cardWeights.get(log.cardId) || 1;
             const baseline = TIER_BASELINES[this._getCardTier(log.cardId)] || 1;
 
             let factor = baseFactor;
-            // Baseline 아래면 감소 속도를 절반으로 (고티어 카드를 너무 빨리 떨구지 않도록)
-            if (current < baseline && factor < 0) {
-                factor *= 0.5;
-            }
-            // Baseline 위에서 증가는 점점 둔화 (천장 효과)
+            // Baseline 위에서 증가만 둔화 (천장 효과)
             if (current > baseline * 1.5 && factor > 0) {
                 factor *= 0.5;
             }
 
-            const newWeight = Math.max(0.2, current + factor * this.learningRate);
+            const newWeight = Math.max(0.1, current + factor * this.learningRate);
             this.cardWeights.set(log.cardId, Math.round(newWeight * 100) / 100);
         }
     }
@@ -346,19 +335,19 @@ export class CardAI {
                 // 전체 게임 대비 사용 빈도 (많이 사용될수록 데이터 신뢰도 높음)
                 const confidence = Math.min(1, stats.uses / (results.length * 0.3));
 
-                // 조정량: 상대 편차 × 학습률 × 신뢰도
-                const adjustment = relativePerformance * this.learningRate * confidence;
+                // 조정량: 상대 편차 × 학습률 × 신뢰도 (증폭)
+                const adjustment = relativePerformance * this.learningRate * confidence * 3;
 
                 const newWeight = Math.max(
-                    baseline * 0.3, // 최소값: Baseline의 30% (해당 티어 최하위)
+                    baseline * 0.15, // 최소값: Baseline의 15%
                     current + adjustment
                 );
                 this.cardWeights.set(cardId, Math.round(newWeight * 100) / 100);
             }
         }
 
-        // 학습률 감쇠 (안정화)
-        this.learningRate = Math.max(0.03, this.learningRate * 0.92);
+        // 학습률 감쇠 (완화: 더 오래 학습)
+        this.learningRate = Math.max(0.05, this.learningRate * 0.97);
 
         // 누적 통계 업데이트
         for (const [cardId, stats] of cardStats) {
