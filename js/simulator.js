@@ -279,22 +279,34 @@ export class Simulator {
                     // 학습: B 사이드 사용 카드
                     this.ai.updateWeights({ cardUsageLog: result.cardUsageLogB }, bOutcome);
 
-                    // 합쳐서 기존 형태처럼 저장 (세대 학습용)
+                    // A 사이드 결과: A가 이기면 win, B가 이기면 lose
                     genResults.push({
                         game: game + 1,
                         enemy: tc.label,
                         result: {
-                            winner: 'player', // A가 이기면 "player" 취급
+                            winner: result.winner === 'A' ? 'player' : 'enemy',
                             turns: result.turns,
-                            cardUsageLog: [...result.cardUsageLogA, ...result.cardUsageLogB],
+                            cardUsageLog: result.cardUsageLogA,
                             playerFinalHp: result.playerAHp,
                             enemyFinalHp: result.playerBHp
                         },
                         deckSize: deckA.length,
                         deck: deckA.map(c => ({ id: c.id, name: c.name, cost: c.cost, type: c.type, rarity: c.rarity, pack: c.pack, tier: c.tier }))
                     });
-                    // 실제 승자로 보정
-                    if (result.winner === 'B') genResults[genResults.length - 1].result.winner = 'enemy';
+                    // B 사이드 결과: B가 이기면 win, A가 이기면 lose
+                    genResults.push({
+                        game: game + 1,
+                        enemy: tc.label,
+                        result: {
+                            winner: result.winner === 'B' ? 'player' : 'enemy',
+                            turns: result.turns,
+                            cardUsageLog: result.cardUsageLogB,
+                            playerFinalHp: result.playerBHp,
+                            enemyFinalHp: result.playerAHp
+                        },
+                        deckSize: deckB.length,
+                        deck: deckB.map(c => ({ id: c.id, name: c.name, cost: c.cost, type: c.type, rarity: c.rarity, pack: c.pack, tier: c.tier }))
+                    });
 
                     // 전투 로그 (세대당 최대 20건 샘플링)
                     if (game < 20) {

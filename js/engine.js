@@ -954,6 +954,16 @@ export class BattleEngine {
             this.effectRegistry.execute(effect.type, ctx);
         }
 
+        // 축적(accumulation) 판정 및 효과 발동
+        if (card.keywords && card.keywords.includes('accumulation') && card.accumulationTarget && card.accumulationEffects) {
+            if ((card.accumulationStack || 0) >= card.accumulationTarget) {
+                for (const aEffect of card.accumulationEffects) {
+                    ctx.effect = aEffect;
+                    this.effectRegistry.execute(aEffect.type, ctx);
+                }
+            }
+        }
+
         // 프로토콜 조건 판정 및 효과 발동
         if (card.protocolCondition && card.protocolEffects) {
             const protocolMet = this._checkProtocolCondition(
@@ -1027,6 +1037,11 @@ export class BattleEngine {
                     player.energy = Math.max(0, player.energy - (pe.energyCost || 0));
                     player.overclockStacks = Math.min(player.overclockStacks + pe.value, player.overclockMax);
                 }
+                // 네트워크 파워 (미러)
+                if (pe.type === 'drawPerNetwork') {
+                    const count = Math.min(pe.value, player.networkCardsPlayedThisBattle || 0);
+                    this._drawCards(player, Math.floor(count / 3));
+                }
                 // 바이오닉 파워 (미러)
                 if (pe.type === 'autoVirus') {
                     player._opponent.virus = (player._opponent.virus || 0) + pe.value;
@@ -1043,6 +1058,14 @@ export class BattleEngine {
                 if (pe.type === 'healOnHighOverclock' && player.overclockStacks >= pe.threshold) {
                     player.overclockStacks--;
                     player.hp = Math.min(player.hp + pe.value, player.maxHp);
+                }
+                // 오버클럭 파워 (미러)
+                if (pe.type === 'overclockScaledShield') {
+                    player.shield += (player.overclockStacks || 0) * (pe.value || 1);
+                }
+                // 네트워크 파워 (미러)
+                if (pe.type === 'doubleThirdNetwork' && player.networkCardsPlayedThisTurn >= 3) {
+                    // 3번째 네트워크 카드 보너스는 카드 플레이 시 처리되므로 여기서는 패스
                 }
                 // 바이오닉 파워 (미러)
                 if (pe.type === 'virus_farm') {
