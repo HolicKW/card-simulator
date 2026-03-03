@@ -28,11 +28,11 @@ const TIER_BASELINES = {
  * 희귀도별 기대 밸류 보정
  */
 const RARITY_MULTIPLIER = {
-    common: 0.8,
-    rare: 1.0,
-    epic: 1.3,
-    unique: 1.6,
-    legendary: 2.0,
+    common: 0.9,
+    rare: 0.95,
+    epic: 1.0,
+    unique: 1.05,
+    legendary: 1.1,
 };
 
 export class CardAI {
