@@ -198,11 +198,11 @@ export class CardAI {
 
             // 체력 위험 → 방어/회복 우선
             if (hpRatio < 0.3) {
-                if (card.effects.some(e => e.type === 'shield' || e.type === 'heal')) {
+                if ((card.effects || []).some(e => e.type === 'shield' || e.type === 'heal')) {
                     score *= 2.5;
                 }
                 // 자해 카드는 회피
-                if (card.effects.some(e => e.type === 'selfDamage')) {
+                if ((card.effects || []).some(e => e.type === 'selfDamage')) {
                     score *= 0.3;
                 }
             }

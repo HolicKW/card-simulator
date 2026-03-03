@@ -1299,8 +1299,8 @@ registerCards([
         id: 'BIO_010', name: '변이체 배양', pack: 'biohazard',
         type: 'skill', rarity: 'common', tier: 1, cost: 1,
         keywords: ['virus'],
-        effects: [{ type: 'virus', value: 3 }, { type: 'draw', value: 1 }],
-        description: '바이러스(3)를 부여합니다. 카드를 1장 뽑습니다.'
+        effects: [{ type: 'virus', value: 2 }, { type: 'draw', value: 1 }],
+        description: '바이러스(2)를 부여합니다. 카드를 1장 뽑습니다.'
     },
     {
         id: 'BIO_011', name: '표피 경화', pack: 'biohazard',
@@ -1314,7 +1314,7 @@ registerCards([
         type: 'skill', rarity: 'common', tier: 1, cost: 1,
         keywords: [],
         effects: [{ type: 'consumeVirusForUtility', consume: 3, draw: 2 }],
-        description: '폭주(3): 적의 바이러스 스택을 3 소모합니다. 카드를 2장 뽑습니다.'
+        description: '폭주(3): 카드를 2장 뽑습니다.'
     },
     {
         id: 'BIO_013', name: '미약한 격발', pack: 'biohazard',
@@ -1487,14 +1487,14 @@ registerCards([
         type: 'skill', rarity: 'epic', tier: 3, cost: 2,
         keywords: [],
         effects: [{ type: 'consumeVirusForUtility', consume: 6, heal: 15, strength: 2 }],
-        description: '폭주(6): 적의 바이러스 스택을 6 소모합니다. 체력을 15 회복하고 힘(2)을 얻습니다.'
+        description: '폭주(6): 체력을 15 회복하고 힘(2)을 얻습니다.'
     },
     {
         id: 'BIO_032', name: '변종 적응체', pack: 'biohazard',
         type: 'skill', rarity: 'epic', tier: 3, cost: 1, // 밸패 반영: 소모 수치만큼 방어도
         keywords: [],
         effects: [{ type: 'consumeVirusForShieldScale', consumeAll: false, maxConsume: 15, multiplier: 1 }],
-        description: '폭주(최대15): 적의 바이러스 스택을 최대 15까지 소모합니다. 소모한 스택 1당 1의 방어도를 얻습니다.'
+        description: '폭주(최대15): 소모한 스택 1당 1의 방어도를 얻습니다.'
     },
 
     // === Tier 4 (10장) ===
@@ -1512,6 +1512,7 @@ registerCards([
         id: 'BIO_034', name: '전염병 연구소', pack: 'biohazard',
         type: 'power', rarity: 'rare', tier: 4, cost: 3,
         keywords: ['virus'],
+        effects: [],
         powerEffect: { type: 'viral_lab' }, // 바이러스 부여 효과시 가로채서 +1 하는 파워 
         description: '(설치) 내가 적에게 바이러스 스택을 부여할 때마다, 수치가 1 추가로 증가합니다.'
     },
@@ -1519,6 +1520,7 @@ registerCards([
         id: 'BIO_035', name: '면역계 장악', pack: 'biohazard',
         type: 'power', rarity: 'epic', tier: 4, cost: 3,
         keywords: [],
+        effects: [],
         powerEffect: { type: 'immune_system_takeover' },
         description: '(설치) 내가 폭주할 때마다, 소모한 양의 절반(내림)만큼 방어도를 얻습니다.'
     },
@@ -1584,8 +1586,8 @@ registerCards([
         id: 'BIO_041', name: '생체정화 장막', pack: 'biohazard',
         type: 'skill', rarity: 'unique', tier: 5, cost: 3,
         keywords: [],
-        effects: [{ type: 'consumeVirusForUtility', consume: 10, heal: 20, shield: 30 }],
-        description: '폭주(10): 적의 바이러스 스택을 10 소모합니다. 30의 방어도를 얻고 체력을 20 회복합니다.'
+        effects: [{ type: 'consumeVirusForUtility', consume: 10, heal: 20, shield: 20 }],
+        description: '폭주(10): 20의 방어도를 얻고 체력을 20 회복합니다.'
     },
     {
         id: 'BIO_042', name: '감염원 증폭기', pack: 'biohazard',
@@ -1604,6 +1606,7 @@ registerCards([
         id: 'BIO_043', name: '바이러스 팜', pack: 'biohazard',
         type: 'power', rarity: 'legendary', tier: 5, cost: 3,
         keywords: [],
+        effects: [],
         powerEffect: { type: 'virus_farm' },
         description: '(설치) 턴 종료 시, 적에게 부여된 바이러스 스택의 20%(올림)만큼 추가 피해를 줍니다.'
     },
@@ -1611,6 +1614,7 @@ registerCards([
         id: 'BIO_044', name: '생물학적 무기 금고', pack: 'biohazard',
         type: 'power', rarity: 'legendary', tier: 5, cost: 4, // 밸패 반영
         keywords: [],
+        effects: [],
         powerEffect: { type: 'bio_weapon_vault' },
         description: '(설치) 내가 폭주할 때마다, 소모한 양의 절반(내림)만큼 영구 힘을 얻습니다.'
     },

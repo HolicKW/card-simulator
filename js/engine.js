@@ -295,7 +295,7 @@ export class BattleEngine {
             engine: this
         };
 
-        for (const effect of card.effects) {
+        for (const effect of (card.effects || [])) {
             ctx.effect = effect;
             this.effectRegistry.execute(effect.type, ctx);
         }
@@ -626,7 +626,7 @@ export class BattleEngine {
                 if (pe.type === 'doubleThirdNetwork' && card.keywords?.includes('network')) {
                     if ((p.networkCardsPlayedThisTurn || 0) === 3) {
                         // 간단한 근사: 추가 데미지 및 방어도
-                        for (const ef of card.effects) {
+                        for (const ef of (card.effects || [])) {
                             if (ef.type === 'damage' || ef.type === 'scaledDamage') {
                                 this.applyDamage(state.enemy, ef.value || 0, p);
                             }
@@ -949,7 +949,7 @@ export class BattleEngine {
             engine: this
         };
 
-        for (const effect of card.effects) {
+        for (const effect of (card.effects || [])) {
             ctx.effect = effect;
             this.effectRegistry.execute(effect.type, ctx);
         }
