@@ -17,11 +17,11 @@ import { getAllCards, getCardsByPack } from './cards.js';
  * 이 값 자체를 넘는 카드가 진짜 OP, 못 미치는 카드가 UP
  */
 const TIER_BASELINES = {
-    1: 1.2,   // T1: 기초 카드, 기대 밸류 낮음
-    2: 2.2,   // T2: 시너지 시작, 중간 밸류
-    3: 3.5,   // T3: 본격 피니셔급, 높은 밸류
-    4: 4.5,   // T4: 상위 카드, 매우 높은 밸류
-    5: 5.5,   // T5: 끝판왕, 최고 밸류
+    1: 1.0,   // T1: 기초 카드
+    2: 1.8,   // T2: 시너지 시작
+    3: 2.8,   // T3: 본격 피니셔급
+    4: 3.8,   // T4: 상위 카드
+    5: 4.5,   // T5: 끝판왕
 };
 
 /**
@@ -268,23 +268,23 @@ export class CardAI {
      * 핵심: "그 카드의 티어 Baseline 대비" 얼마나 기여했느냐로 조정
      */
     updateWeights(result, outcome) {
-        const baseFactor = outcome === 'win' ? 0.06 : -0.06;
+        const baseFactor = outcome === 'win' ? 0.05 : -0.05;
 
         for (const log of result.cardUsageLog) {
             const current = this.cardWeights.get(log.cardId) || 1;
             const baseline = TIER_BASELINES[this._getCardTier(log.cardId)] || 1;
 
             let factor = baseFactor;
-            // Baseline 아래면 감소 약간 완화 (급락 방지)
-            if (current < baseline * 0.7 && factor < 0) {
-                factor *= 0.6;
+            // Baseline의 50% 아래면 하락 완화 (극단적 급락 방지)
+            if (current < baseline * 0.5 && factor < 0) {
+                factor *= 0.4;
             }
             // Baseline 위에서 증가는 둔화 (천장 효과)
             if (current > baseline * 1.5 && factor > 0) {
                 factor *= 0.5;
             }
 
-            const newWeight = Math.max(0.1, current + factor * this.learningRate);
+            const newWeight = Math.max(0.15, current + factor * this.learningRate);
             this.cardWeights.set(log.cardId, Math.round(newWeight * 100) / 100);
         }
     }
@@ -340,10 +340,10 @@ export class CardAI {
                 const confidence = Math.min(1, stats.uses / (results.length * 0.3));
 
                 // 조정량: 상대 편차 × 학습률 × 신뢰도 (증폭)
-                const adjustment = relativePerformance * this.learningRate * confidence * 2;
+                const adjustment = relativePerformance * this.learningRate * confidence * 1.5;
 
                 const newWeight = Math.max(
-                    baseline * 0.15, // 최소값: Baseline의 15%
+                    baseline * 0.2, // 최소값: Baseline의 20%
                     current + adjustment
                 );
                 this.cardWeights.set(cardId, Math.round(newWeight * 100) / 100);
