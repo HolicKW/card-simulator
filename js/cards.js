@@ -529,11 +529,11 @@ registerCards([
         type: 'attack', rarity: 'legendary', tier: 5, cost: 4,
         keywords: ['overcurrent', 'overclock'],
         effects: [
-            { type: 'overload', value: 2 },
+            { type: 'overload', value: 3 },
             { type: 'overclockConsume' },
-            { type: 'scaledDamage', value: 150, scaling: { source: 'overclockConsumed', multiplier: 50 } }
+            { type: 'scaledDamage', value: 100, scaling: { source: 'overclockConsumed', multiplier: 50 } }
         ],
-        description: '과전류(3), 과부하(2). 150 피해 + 오버클럭 스택당 50 추가 피해.'
+        description: '과전류(3), 과부하(3). 100 피해 + 오버클럭 스택당 50 추가 피해.'
     },
     {
         id: 'OC_038', name: '오버 드라이브 코어', pack: 'overclock',
@@ -1184,7 +1184,7 @@ registerCards([
             thenEffects: [{ type: 'damage', value: 120 }, { type: 'energy', value: 2 }],
             elseEffects: [{ type: 'damage', value: 30 }]
         }],
-        description: '30 피해. 축적(5): 에너지 2 + 피해 4배(120).'
+        description: '30 피해. 축적(8): 에너지 2 + 피해 4배(120).'
     },
     {
         id: 'NW_038', name: '양자 얽힘 스매시', pack: 'network',
@@ -1259,7 +1259,7 @@ registerCards([
 registerPack('biohazard', {
     name: '바이오 해저드 팩',
     description: '바이러스와 부식으로 적을 좀먹고 폭주로 폭발시키는 팩',
-    totalCards: 30
+    totalCards: 45
 });
 
 registerCards([
@@ -1549,10 +1549,9 @@ registerCards([
             { type: 'damage', value: 30 },
             { type: 'virus', value: 5 },
             { type: 'corrosion', value: 5 },
-            // 적 힘 0으로 만드는 특수 처리 필요
-            { type: 'conditionalAdd', condition: 'virusTarget', conditionValue: 10, setStrengthZero: true } // effects.js conditionalAdd 에 예외 처리 구현 필요
+            { type: 'conditionalAdd', condition: 'virusTarget', conditionValue: 20, halveStrength: true }
         ],
-        description: '적에게 30의 피해를 줍니다. 바이러스(5) + 부식(5)를 부여합니다. 적에게 바이러스가 10 이상이면 적의 힘을 0으로 만듭니다.'
+        description: '적에게 30의 피해를 줍니다. 바이러스(5) + 부식(5)를 부여합니다. 적의 바이러스가 20 이상이면 적의 힘을 절반으로 만듭니다.'
     },
     {
         id: 'BIO_039', name: '바이오 리퀴데이터', pack: 'biohazard',
@@ -1562,11 +1561,10 @@ registerCards([
         accumulationStack: 0,
         effects: [{ type: 'damage', value: 10 }],
         accumulationEffects: [
-            { type: 'damageByDebuff', debuff: 'virus', multiplier: 3 },
-            { type: 'corrosion', value: 5 },
-            { type: 'shield', value: 15 }
+            { type: 'damageByDebuff', debuff: 'virus', multiplier: 1 },
+            { type: 'corrosion', value: 5 }
         ],
-        description: '적에게 10의 피해를 줍니다. [내 카드가 누적 5코스트 이상 소모 시] 적의 바이러스 스택 × 3 피해 + 부식(5) + 15 방어도.'
+        description: '적에게 10의 피해를 줍니다. 축적(5): 적의 바이러스 스택만큼 추가 피해 + 부식(5).'
     },
     {
         id: 'BIO_040', name: '오메가 변이', pack: 'biohazard',
@@ -1576,9 +1574,9 @@ registerCards([
         accumulationStack: 0,
         effects: [],
         accumulationEffects: [
-            { type: 'consumeVirusForUtility', consume: 0, draw: 3, energy: 3 } // 밸패 반영 
+            { type: 'consumeVirusForUtility', consume: 0, draw: 3, energy: 2 }
         ],
-        description: '[내 카드가 누적 6코스트 이상 소모 시] 에너지를 3 얻고, 카드를 3장 뽑습니다.'
+        description: '축적(6): 에너지를 2 얻고, 카드를 3장 뽑습니다.'
     },
 
     // === Tier 5 (5장) ===
@@ -1620,7 +1618,7 @@ registerCards([
     },
     {
         id: 'BIO_045', name: '절대 감염체', pack: 'biohazard',
-        type: 'power', rarity: 'mythic', tier: 5, cost: 5,
+        type: 'power', rarity: 'legendary', tier: 5, cost: 5,
         keywords: ['virus', 'corrosion'],
         effects: [{ type: 'damage', target: 'self', value: 15 }], // HP 페널티 구현
         powerEffect: { type: 'absolute_carrier', maxBonusStack: 5, value: 2 }, // param 자유

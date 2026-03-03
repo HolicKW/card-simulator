@@ -394,6 +394,7 @@ export function registerCoreEffects(registry) {
       if (ctx.effect.addVirus) ctx.target.virus = (ctx.target.virus || 0) + ctx.effect.addVirus;
       if (ctx.effect.destroyShield) ctx.target.shield = 0;
       if (ctx.effect.setStrengthZero) ctx.target.strength = 0;
+      if (ctx.effect.halveStrength) ctx.target.strength = Math.floor((ctx.target.strength || 0) / 2);
     }
   });
 
