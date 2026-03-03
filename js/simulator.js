@@ -238,9 +238,19 @@ export class Simulator {
                 for (let game = 0; game < config.gamesPerGeneration; game++) {
                     if (!this.isRunning) break;
 
-                    // 두 AI가 각자 덱 빌딩
-                    const deckA = this.ai.buildDeck(config.packs, tc.tier, config.deckSize);
-                    const deckB = this.ai.buildDeck(config.packs, tc.tier, config.deckSize);
+                    // 팩 vs 팩: non-base 팩을 A/B에 랜덤 분할 (겹치지 않게)
+                    const nonBasePacks = config.packs.filter(p => p !== 'base');
+                    const shuffled = [...nonBasePacks].sort(() => Math.random() - 0.5);
+                    // 분할 지점: 최소 1개씩 보장
+                    const splitAt = Math.max(1, Math.min(
+                        shuffled.length - 1,
+                        Math.floor(Math.random() * shuffled.length)
+                    ));
+                    const packsA = ['base', ...shuffled.slice(0, splitAt)];
+                    const packsB = ['base', ...shuffled.slice(splitAt)];
+
+                    const deckA = this.ai.buildDeck(packsA, tc.tier, config.deckSize);
+                    const deckB = this.ai.buildDeck(packsB, tc.tier, config.deckSize);
 
                     if (deckA.length < 10 || deckB.length < 10) continue;
 
