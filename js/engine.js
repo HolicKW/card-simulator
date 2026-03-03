@@ -46,7 +46,13 @@ export class BattleEngine {
                 baseDraw: 5,
                 extraDraw: 0,
                 rebuildBonuses: 0,
-                totalRebuildsThisBattle: 0
+                totalRebuildsThisBattle: 0,
+                networkStacks: 0,
+                networkCardsPlayedThisTurn: 0,
+                networkCardsPlayedThisBattle: 0,
+                totalDamageThisTurn: 0,
+                lastPlayedCard: null,
+                protocolBypassCount: 0
             },
             enemy: {
                 hp: enemyConfig.hp || 100,
@@ -116,19 +122,33 @@ export class BattleEngine {
         const p = state.player;
 
         // 턴 시작 초기화
-        p.energy = p.baseEnergy - (p.overloadNext || 0);
+        // 에너지 이월 처리
+        if (p.energyCarryOver) {
+            const carried = Math.min(p.energy || 0, p.maxEnergyPool || 10);
+            p.energy = p.baseEnergy - (p.overloadNext || 0) + carried;
+            p.energy = Math.min(p.energy, p.maxEnergyPool || 10);
+        } else {
+            p.energy = p.baseEnergy - (p.overloadNext || 0);
+        }
         if (p.energy < 0) p.energy = 0;
         p.overloadNext = 0;
         p.selfDamageThisTurn = 0;
         p.dismantledThisTurn = 0;
         p.cardsPlayedThisTurn = 0;
-
-        // 힘 반감 (턴 시작 시)
-        p.strength = Math.floor(p.strength / 2);
+        p.networkStacks = 0;
+        p.networkCardsPlayedThisTurn = 0;
+        p.totalDamageThisTurn = 0;
+        p.lastPlayedCard = null;
+        p.protocolBypassCount = 0;
 
         // 약화 자연 치유 (적의 약화가 플레이어에게 건 것)
-        // 현재는 플레이어 약화는 턴 시작 시 1 감소
         if (p.weakness > 0) p.weakness -= 1;
+
+        // 부식 처리 (플레이어)
+        if (p.corrosion > 0) {
+            this.applyDamage(p, p.corrosion, null, true); // true = 무속성/고정피해 취급 또는 방어도를 깎는 특수 처리 (현재는 그냥 피해로 적용, 방어도가 먼저 깎임)
+            p.corrosion -= 1;
+        }
 
         // 드로우 페이즈: 핸드가 5장 미만이면 보충
         const drawTarget = p.baseDraw + p.extraDraw;
@@ -177,8 +197,14 @@ export class BattleEngine {
         const e = state.enemy;
         const pattern = e.attackPattern[e.patternIndex % e.attackPattern.length];
 
-        // 적 약화 감소 (턴 시작)
+        // 적 약화 및 부식 감소 (턴 시작)
         if (e.weakness > 0) e.weakness -= 1;
+
+        // 부식 처리 (적)
+        if (e.corrosion > 0) {
+            this.applyDamage(e, e.corrosion, null, true); // 부식 피해
+            e.corrosion -= 1;
+        }
 
         switch (pattern.type) {
             case 'attack': {
@@ -241,6 +267,22 @@ export class BattleEngine {
             );
         }
 
+        // 네트워크 카드이면 스택 증가
+        if (card.keywords && card.keywords.includes('network')) {
+            p.networkStacks = (p.networkStacks || 0) + 1;
+            p.networkCardsPlayedThisTurn = (p.networkCardsPlayedThisTurn || 0) + 1;
+            p.networkCardsPlayedThisBattle = (p.networkCardsPlayedThisBattle || 0) + 1;
+        }
+
+        // 축적(Accumulation) 카드 처리 로직
+        // 패에 있는 나머지 축적 카드들의 카운트를 올려줍니다.
+        for (let i = 0; i < p.hand.length; i++) {
+            let hCard = p.hand[i];
+            if (hCard.keywords && hCard.keywords.includes('accumulation') && hCard.accumulationTarget) {
+                hCard.accumulationStack = (hCard.accumulationStack || 0) + card.cost;
+            }
+        }
+
         // 핸드에서 제거
         p.hand.splice(cardIndex, 1);
 
@@ -257,6 +299,32 @@ export class BattleEngine {
             ctx.effect = effect;
             this.effectRegistry.execute(effect.type, ctx);
         }
+
+        // 내 카드가 축적 조건을 완수했으면 축적 이펙트 발동
+        if (card.keywords && card.keywords.includes('accumulation') && card.accumulationTarget && card.accumulationEffects) {
+            if ((card.accumulationStack || 0) >= card.accumulationTarget) {
+                for (const aEffect of card.accumulationEffects) {
+                    ctx.effect = aEffect;
+                    this.effectRegistry.execute(aEffect.type, ctx);
+                }
+            }
+        }
+
+        // 프로토콜 조건 판정 및 효과 발동
+        if (card.protocolCondition && card.protocolEffects) {
+            const protocolMet = this._checkProtocolCondition(
+                p.lastPlayedCard, card.protocolCondition, p
+            );
+            if (protocolMet) {
+                for (const pEffect of card.protocolEffects) {
+                    ctx.effect = pEffect;
+                    this.effectRegistry.execute(pEffect.type, ctx);
+                }
+            }
+        }
+
+        // 마지막 카드 기록 (프로토콜 조건 판정용)
+        p.lastPlayedCard = card;
 
         // 파워 카드 처리
         if (card.type === 'power') {
@@ -315,18 +383,28 @@ export class BattleEngine {
 
     // ─── 유틸리티 메서드 ───
 
-    applyDamage(target, amount) {
+    applyDamage(target, amount, source, bypassShield = false) {
         if (amount <= 0) return;
-        if (target.shield > 0) {
-            if (target.shield >= amount) {
-                target.shield -= amount;
-                return;
-            } else {
-                amount -= target.shield;
-                target.shield = 0;
-            }
+        // 누적 데미지 추적 (시전자가 있으면)
+        if (source) {
+            source.totalDamageThisTurn = (source.totalDamageThisTurn || 0) + amount;
         }
-        target.hp -= amount;
+
+        if (bypassShield) {
+            target.hp -= amount;
+        } else {
+            if (target.shield > 0) {
+                if (target.shield >= amount) {
+                    target.shield -= amount;
+                    return;
+                } else {
+                    amount -= target.shield;
+                    target.shield = 0;
+                }
+            }
+            target.hp -= amount;
+        }
+
         if (target.hp < 0) target.hp = 0;
     }
 
@@ -374,7 +452,36 @@ export class BattleEngine {
         for (let i = 0; i < count; i++) {
             if (entity.hand.length >= maxHand) break;
             if (entity.drawPile.length === 0) break;
-            entity.hand.push(entity.drawPile.shift());
+
+            let card = entity.drawPile.shift();
+            // 축적 카드 초기화 (패에 들어올 때 스택 0)
+            if (card.keywords && card.keywords.includes('accumulation')) {
+                card.accumulationStack = 0;
+            }
+            entity.hand.push(card);
+        }
+    }
+
+    hasPower(entity, powerType) {
+        return entity.activePowers && entity.activePowers.some(pw => pw.powerEffect?.type === powerType);
+    }
+
+    heal(entity, amount) {
+        entity.hp = Math.min((entity.hp || 0) + amount, entity.maxHp || 80);
+    }
+
+    _triggerVirusConsumePowers(caster, amountConsumed) {
+        // 생물학적 무기 금고: 소모량/2 버림 만큼 힘
+        if (this.hasPower(caster, 'bio_weapon_vault')) {
+            caster.strength = (caster.strength || 0) + Math.floor(amountConsumed / 2);
+        }
+        // 면역계 장악: 소모량/2 버림 방어
+        if (this.hasPower(caster, 'immune_system_takeover')) {
+            caster.shield = (caster.shield || 0) + Math.floor(amountConsumed / 2);
+        }
+        // 절대 감염체 코스트: 1 에너지
+        if (this.hasPower(caster, 'absolute_carrier')) {
+            caster.energy = Math.min((caster.energy || 0) + 1, caster.maxEnergyPool || 10);
         }
     }
 
@@ -409,7 +516,6 @@ export class BattleEngine {
             if (timing === 'turnStart') {
                 switch (pe.type) {
                     case 'extraDraw':
-                        // 이미 baseDraw + extraDraw로 반영
                         break;
                     case 'extraEnergy':
                         p.energy += pe.value;
@@ -420,6 +526,17 @@ export class BattleEngine {
                             p.overclockStacks + pe.value,
                             p.overclockMax
                         );
+                        break;
+                    // 바이오닉 파워
+                    case 'autoVirus':
+                        state.enemy.virus = (state.enemy.virus || 0) + pe.value;
+                        break;
+                    case 'autoCorrosion':
+                        state.enemy.corrosion = (state.enemy.corrosion || 0) + pe.value;
+                        break;
+                    case 'absolute_carrier':
+                        state.enemy.virus = (state.enemy.virus || 0) + 5;
+                        state.enemy.corrosion = (state.enemy.corrosion || 0) + 2;
                         break;
                 }
             }
@@ -432,6 +549,15 @@ export class BattleEngine {
                             p.hp = Math.min(p.hp + pe.value, p.maxHp);
                         }
                         break;
+                    // 바이오닉 파워
+                    case 'virus_farm': {
+                        const virusStacks = state.enemy.virus || 0;
+                        if (virusStacks > 0) {
+                            const farmDmg = Math.ceil(virusStacks * 0.2);
+                            this.applyDamage(state.enemy, farmDmg, p);
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -448,6 +574,14 @@ export class BattleEngine {
                 break;
             case 'rebuildBonus':
                 p.rebuildBonuses += pe.value;
+                break;
+            case 'permanentNetworkBuff':
+                p.networkDamageBuff = (p.networkDamageBuff || 0) + pe.damage;
+                p.networkShieldBuff = (p.networkShieldBuff || 0) + pe.shield;
+                break;
+            case 'energyCarryOver':
+                p.energyCarryOver = true;
+                p.maxEnergyPool = pe.maxEnergy || 10;
                 break;
         }
     }
@@ -472,12 +606,74 @@ export class BattleEngine {
                     }
                 }
                 if (pe.type === 'damageOnSelfDamage' && p.selfDamageThisTurn > 0) {
-                    this.applyDamage(state.enemy, p.selfDamageThisTurn);
+                    this.applyDamage(state.enemy, p.selfDamageThisTurn, p);
                 }
                 if (pe.type === 'damageOnDismantle' && p.dismantledThisTurn > 0) {
-                    this.applyDamage(state.enemy, pe.value);
+                    this.applyDamage(state.enemy, pe.value, p);
+                }
+                // 네트워크: 프로토콜 달성 시 데미지+방어도
+                if (pe.type === 'damageAndShieldOnProtocol' && card.protocolCondition) {
+                    this.applyDamage(state.enemy, pe.damage, p);
+                    p.shield += pe.shield;
+                }
+                // 네트워크: 3장 사용 시 드로우
+                if (pe.type === 'drawOnNetworkThreshold' && card.keywords?.includes('network')) {
+                    if ((p.networkCardsPlayedThisTurn || 0) === pe.threshold) {
+                        this._drawCards(p, pe.value);
+                    }
+                }
+                // 네트워크: 3번째 네트워크 카드 2배
+                if (pe.type === 'doubleThirdNetwork' && card.keywords?.includes('network')) {
+                    if ((p.networkCardsPlayedThisTurn || 0) === 3) {
+                        // 간단한 근사: 추가 데미지 및 방어도
+                        for (const ef of card.effects) {
+                            if (ef.type === 'damage' || ef.type === 'scaledDamage') {
+                                this.applyDamage(state.enemy, ef.value || 0, p);
+                            }
+                            if (ef.type === 'shield' || ef.type === 'scaledShield') {
+                                p.shield += (ef.value || 0);
+                            }
+                        }
+                    }
+                }
+                // 네트워크: 카드 N번째 사용 시 에너지
+                if (pe.type === 'energyOnCardCount' && pe.thresholds?.includes(p.cardsPlayedThisTurn)) {
+                    p.energy += pe.value;
                 }
             }
+        }
+    }
+
+    // ─── 프로토콜 조건 판정 ───
+
+    _checkProtocolCondition(lastCard, condition, caster) {
+        // 프로토콜 우회 카운트가 있으면 자동 충족
+        if (caster.protocolBypassCount > 0) {
+            caster.protocolBypassCount--;
+            return true;
+        }
+        // 직전 카드가 없으면 실패
+        if (!lastCard) return false;
+
+        switch (condition) {
+            case 'network':
+                return lastCard.keywords?.includes('network') || false;
+            case 'attack':
+                return lastCard.type === 'attack';
+            case 'skill':
+                return lastCard.type === 'skill';
+            case 'power':
+                return lastCard.type === 'power';
+            case 'zeroCost':
+                return lastCard.cost === 0;
+            case 'dismantle':
+                return lastCard.keywords?.includes('dismantle') || false;
+            case 'selfDamage':
+                return lastCard.keywords?.includes('overclock') || false;
+            case 'any':
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -530,7 +726,10 @@ export class BattleEngine {
             drawPile: this._shuffleArray(deck.map(c => this._cloneCard(c))),
             hand: [], void: [], activePowers: [],
             baseDraw: 5, extraDraw: 0,
-            rebuildBonuses: 0, totalRebuildsThisBattle: 0
+            rebuildBonuses: 0, totalRebuildsThisBattle: 0,
+            networkStacks: 0, networkCardsPlayedThisTurn: 0,
+            networkCardsPlayedThisBattle: 0, totalDamageThisTurn: 0,
+            lastPlayedCard: null, protocolBypassCount: 0
         });
 
         const playerA = makePlayer(deckA);
@@ -634,15 +833,30 @@ export class BattleEngine {
         const usageLog = side === 'A' ? state.cardUsageLogA : state.cardUsageLogB;
 
         // 턴 시작 초기화
-        player.energy = player.baseEnergy - (player.overloadNext || 0);
+        // 에너지 이월 처리
+        if (player.energyCarryOver) {
+            const carried = Math.min(player.energy || 0, player.maxEnergyPool || 10);
+            player.energy = player.baseEnergy - (player.overloadNext || 0) + carried;
+            player.energy = Math.min(player.energy, player.maxEnergyPool || 10);
+        } else {
+            player.energy = player.baseEnergy - (player.overloadNext || 0);
+        }
         if (player.energy < 0) player.energy = 0;
         player.overloadNext = 0;
         player.selfDamageThisTurn = 0;
         player.dismantledThisTurn = 0;
         player.cardsPlayedThisTurn = 0;
-        player.strength = Math.floor(player.strength / 2);
+        player.networkStacks = 0;
+        player.networkCardsPlayedThisTurn = 0;
+        player.totalDamageThisTurn = 0;
+        player.lastPlayedCard = null;
         if (player.weakness > 0) player.weakness -= 1;
 
+        // 부식 처리 (미러전)
+        if (player.corrosion > 0) {
+            this.applyDamage(player, player.corrosion, null, true);
+            player.corrosion -= 1;
+        }
         // 드로우
         const drawTarget = player.baseDraw + player.extraDraw;
         const toDraw = Math.max(0, drawTarget - player.hand.length);
@@ -715,6 +929,13 @@ export class BattleEngine {
             );
         }
 
+        // 네트워크 카드이면 스택 증가
+        if (card.keywords?.includes('network')) {
+            player.networkStacks = (player.networkStacks || 0) + 1;
+            player.networkCardsPlayedThisTurn = (player.networkCardsPlayedThisTurn || 0) + 1;
+            player.networkCardsPlayedThisBattle = (player.networkCardsPlayedThisBattle || 0) + 1;
+        }
+
         player.hand.splice(cardIndex, 1);
 
         const ctx = {
@@ -732,6 +953,22 @@ export class BattleEngine {
             ctx.effect = effect;
             this.effectRegistry.execute(effect.type, ctx);
         }
+
+        // 프로토콜 조건 판정 및 효과 발동
+        if (card.protocolCondition && card.protocolEffects) {
+            const protocolMet = this._checkProtocolCondition(
+                player.lastPlayedCard, card.protocolCondition, player
+            );
+            if (protocolMet) {
+                for (const pEffect of card.protocolEffects) {
+                    ctx.effect = pEffect;
+                    this.effectRegistry.execute(pEffect.type, ctx);
+                }
+            }
+        }
+
+        // 마지막 카드 기록
+        player.lastPlayedCard = card;
 
         if (card.type === 'power') {
             player.activePowers.push(this._cloneCard(card));
@@ -790,11 +1027,27 @@ export class BattleEngine {
                     player.energy = Math.max(0, player.energy - (pe.energyCost || 0));
                     player.overclockStacks = Math.min(player.overclockStacks + pe.value, player.overclockMax);
                 }
+                // 바이오닉 파워 (미러)
+                if (pe.type === 'autoVirus') {
+                    player._opponent.virus = (player._opponent.virus || 0) + pe.value;
+                }
+                if (pe.type === 'autoCorrosion') {
+                    player._opponent.corrosion = (player._opponent.corrosion || 0) + pe.value;
+                }
+                if (pe.type === 'absolute_carrier') {
+                    player._opponent.virus = (player._opponent.virus || 0) + 5;
+                    player._opponent.corrosion = (player._opponent.corrosion || 0) + 2;
+                }
             }
             if (timing === 'turnEnd') {
                 if (pe.type === 'healOnHighOverclock' && player.overclockStacks >= pe.threshold) {
                     player.overclockStacks--;
                     player.hp = Math.min(player.hp + pe.value, player.maxHp);
+                }
+                // 바이오닉 파워 (미러)
+                if (pe.type === 'virus_farm') {
+                    const vs = player._opponent.virus || 0;
+                    if (vs > 0) this.applyDamage(player._opponent, Math.ceil(vs * 0.2), player);
                 }
             }
         }
@@ -804,5 +1057,13 @@ export class BattleEngine {
         if (pe.type === 'extraDraw') player.extraDraw += pe.value;
         if (pe.type === 'extraEnergy') player.baseEnergy += pe.value;
         if (pe.type === 'rebuildBonus') player.rebuildBonuses += pe.value;
+        if (pe.type === 'permanentNetworkBuff') {
+            player.networkDamageBuff = (player.networkDamageBuff || 0) + pe.damage;
+            player.networkShieldBuff = (player.networkShieldBuff || 0) + pe.shield;
+        }
+        if (pe.type === 'energyCarryOver') {
+            player.energyCarryOver = true;
+            player.maxEnergyPool = pe.maxEnergy || 10;
+        }
     }
 }

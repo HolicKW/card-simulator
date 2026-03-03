@@ -138,8 +138,8 @@ registerCards([
         id: 'BASE_010', name: '약점 스캔', pack: 'base',
         type: 'skill', rarity: 'common', tier: 1, cost: 2,
         keywords: [],
-        effects: [{ type: 'strength', value: 2 }, { type: 'draw', value: 1 }],
-        description: '내게 힘을 2 부여하고 카드를 1장 뽑습니다.'
+        effects: [{ type: 'strength', value: 1 }, { type: 'draw', value: 1 }],
+        description: '내게 힘을 1 부여하고 카드를 1장 뽑습니다.'
     },
     // === Tier 2 (4장) ===
     {
@@ -977,7 +977,7 @@ registerCards([
         id: 'NW_012', name: '서브루틴 가동', pack: 'network',
         type: 'skill', rarity: 'common', tier: 1, cost: 0,
         keywords: ['network'],
-        effects: [{ type: 'scaledShield', value: 0, scaling: { source: 'networkStacks', multiplier: 1 } }],
+        effects: [{ type: 'protocolBypass', value: 1 }, { type: 'scaledShield', value: 0, scaling: { source: 'networkStacks', multiplier: 1 } }],
         description: '0 + n×1 방어도. 다음 카드 프로토콜 자동 충족. [네트워크]'
     },
     {
@@ -1018,8 +1018,8 @@ registerCards([
         rebuildCount: 2,
         effects: [{ type: 'scaledDamage', value: 5, scaling: { source: 'networkStacks', multiplier: 2 } }],
         protocolCondition: 'network',
-        protocolEffects: [{ type: 'rebuildBonus', value: 1 }],
-        description: '재구축(2). 5 + n×2 피해. 프로토콜[네트워크]: 재구축 +1.'
+        protocolEffects: [{ type: 'virus', value: 1 }],
+        description: '재구축(2). 5 + n×2 피해. 프로토콜[네트워크]: 바이러스(1).'
     },
     {
         id: 'NW_018', name: '디도스(DDoS) 폭격', pack: 'network',
@@ -1073,8 +1073,8 @@ registerCards([
         id: 'NW_024', name: '매크로 캔슬', pack: 'network',
         type: 'skill', rarity: 'epic', tier: 2, cost: 0,
         keywords: [],
-        effects: [{ type: 'draw', value: 3 }],
-        description: '턴 종료, 남은 에너지당 1장 드로우 (최대 6장).'
+        effects: [{ type: 'draw', value: 1 }],
+        description: '턴 종료, 남은 에너지당 1장 드로우.'
     },
     {
         id: 'NW_025', name: '봇넷 지휘소', pack: 'network',
@@ -1109,15 +1109,15 @@ registerCards([
         type: 'attack', rarity: 'rare', tier: 3, cost: 1,
         keywords: ['protocol'],
         effects: [{ type: 'damage', value: 15 }],
-        protocolCondition: 'selfDamage',
+        protocolCondition: 'network',
         protocolEffects: [{ type: 'armorPierce', value: true }],
-        description: '15 피해. 프로토콜[자해/과부하]: 방어도 무시.'
+        description: '15 피해. 프로토콜[네트워크]: 방어도 무시.'
     },
     {
         id: 'NW_029', name: '대역폭 증폭', pack: 'network',
         type: 'skill', rarity: 'epic', tier: 3, cost: 2,
         keywords: ['network'],
-        effects: [{ type: 'scaledShield', value: 5, scaling: { source: 'networkStacks', multiplier: 2 } }],
+        effects: [{ type: 'protocolBypass', value: 2 }, { type: 'scaledShield', value: 5, scaling: { source: 'networkStacks', multiplier: 2 } }],
         description: '5 + n×2 방어도. 다음 2장 프로토콜 자동 충족. [네트워크]'
     },
     {
@@ -1194,15 +1194,7 @@ registerCards([
         description: '25 피해 + 이번 턴 총 피해의 50% 추가.'
     },
     {
-        id: 'NW_039', name: '시스템 완전 포맷', pack: 'network',
-        type: 'power', rarity: 'unique', tier: 4, cost: 3,
-        keywords: ['network'],
-        effects: [],
-        powerEffect: { type: 'permanentNetworkBuff', damage: 3, shield: 3 },
-        description: '모든 [네트워크] 카드 피해/방어도 영구 +3.'
-    },
-    {
-        id: 'NW_040', name: '웜바이러스 배양', pack: 'network',
+        id: 'NW_039', name: '웜바이러스 배양', pack: 'network',
         type: 'skill', rarity: 'unique', tier: 4, cost: 1,
         keywords: ['network'],
         effects: [{
@@ -1214,18 +1206,26 @@ registerCards([
         description: '2장 드로우. 카드 4장+ 사용 시 추가 2장. [네트워크]'
     },
     {
-        id: 'NW_041', name: '마스터 오버라이드', pack: 'network',
+        id: 'NW_040', name: '마스터 오버라이드', pack: 'network',
         type: 'skill', rarity: 'legendary', tier: 5, cost: 3,
         keywords: [],
         effects: [{ type: 'draw', value: 5 }, { type: 'energy', value: 3 }],
         description: '손패 전부 버림, 버린 수만큼 고코스트 카드 서치(코스트 1).'
     },
     {
-        id: 'NW_042', name: '초차원 게이트웨이', pack: 'network',
+        id: 'NW_041', name: '초차원 게이트웨이', pack: 'network',
         type: 'skill', rarity: 'unique', tier: 4, cost: 2,
         keywords: [],
         effects: [{ type: 'draw', value: 1 }, { type: 'energy', value: 2 }],
         description: '덱에서 가장 고코스트 카드 서치, 코스트 0.'
+    },
+    {
+        id: 'NW_042', name: '시스템 완전 포맷', pack: 'network',
+        type: 'power', rarity: 'unique', tier: 4, cost: 3,
+        keywords: ['network'],
+        effects: [],
+        powerEffect: { type: 'permanentNetworkBuff', damage: 3, shield: 3 },
+        description: '모든 [네트워크] 카드 피해/방어도 영구 +3.'
     },
     {
         id: 'NW_043', name: '튜링 완전 신경망', pack: 'network',
@@ -1233,7 +1233,7 @@ registerCards([
         keywords: ['protocol'],
         effects: [],
         powerEffect: { type: 'damageAndShieldOnProtocol', damage: 5, shield: 3 },
-        description: '프로토콜 달성 시마다 적에게 5 피해 + 방어도 3.'
+        description: '프로토콜 달성 시마다 적에게 5 고정 피해 + 방어도 3.'
     },
     {
         id: 'NW_044', name: '글로벌 넷 연결', pack: 'network',
@@ -1250,5 +1250,376 @@ registerCards([
         effects: [],
         powerEffect: { type: 'energyCarryOver', maxEnergy: 10 },
         description: '남은 에너지 이월 (최대 10).'
+    }
+]);
+
+// ═══════════════════════════════════════════
+// 5. 바이오 해저드 (바이오닉·감염) 팩 (30장)
+// ═══════════════════════════════════════════
+registerPack('biohazard', {
+    name: '바이오 해저드 팩',
+    description: '바이러스와 부식으로 적을 좀먹고 폭주로 폭발시키는 팩',
+    totalCards: 30
+});
+
+registerCards([
+    // === Tier 1 (10장) ===
+    {
+        id: 'BIO_006', name: '감염 주사', pack: 'biohazard',
+        type: 'attack', rarity: 'common', tier: 1, cost: 0,
+        keywords: ['virus'],
+        effects: [{ type: 'damage', value: 3 }, { type: 'virus', value: 2 }],
+        description: '적에게 3의 피해를 주고, 바이러스(2)를 부여합니다.'
+    },
+    {
+        id: 'BIO_007', name: '독성 스크래치', pack: 'biohazard',
+        type: 'attack', rarity: 'common', tier: 1, cost: 1,
+        keywords: ['virus'],
+        effects: [{ type: 'damage', value: 6 }, { type: 'virus', value: 1 }],
+        description: '적에게 6의 피해를 주고, 바이러스(1)를 부여합니다.'
+    },
+    {
+        id: 'BIO_008', name: '부식성 타격', pack: 'biohazard',
+        type: 'attack', rarity: 'common', tier: 1, cost: 1,
+        keywords: ['corrosion'],
+        effects: [{ type: 'damage', value: 5 }, { type: 'corrosion', value: 1 }],
+        description: '적에게 5의 피해를 주고, 부식(1)을 부여합니다.'
+    },
+    {
+        id: 'BIO_009', name: '변이체 난사', pack: 'biohazard',
+        type: 'attack', rarity: 'rare', tier: 1, cost: 2,
+        keywords: ['virus'],
+        effects: [
+            { type: 'damage', value: 4, hits: 3 },
+            { type: 'virus', value: 3 } // 1스택 * 3회 (간편화를 위해 총량 부여)
+        ],
+        description: '적에게 4의 피해를 3번 줍니다. 각 히트마다 바이러스(1)를 부여합니다.'
+    },
+    {
+        id: 'BIO_010', name: '변이체 배양', pack: 'biohazard',
+        type: 'skill', rarity: 'common', tier: 1, cost: 1,
+        keywords: ['virus'],
+        effects: [{ type: 'virus', value: 3 }, { type: 'draw', value: 1 }],
+        description: '바이러스(3)를 부여합니다. 카드를 1장 뽑습니다.'
+    },
+    {
+        id: 'BIO_011', name: '표피 경화', pack: 'biohazard',
+        type: 'skill', rarity: 'common', tier: 1, cost: 1,
+        keywords: ['corrosion'],
+        effects: [{ type: 'shield', value: 8 }, { type: 'corrosion', target: 'self', value: 1 }],
+        description: '8의 방어도를 얻고, 나에게 부식(1)을 부여합니다.'
+    },
+    {
+        id: 'BIO_012', name: '감염 확산', pack: 'biohazard',
+        type: 'skill', rarity: 'common', tier: 1, cost: 1,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForUtility', consume: 3, draw: 2 }],
+        description: '폭주(3): 적의 바이러스 스택을 3 소모합니다. 카드를 2장 뽑습니다.'
+    },
+    {
+        id: 'BIO_013', name: '미약한 격발', pack: 'biohazard',
+        type: 'attack', rarity: 'common', tier: 1, cost: 1,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForDamage', consume: 'all', multiplier: 1 }],
+        description: '폭주(전부): 적의 바이러스 스택을 전부 소모합니다. 소모한 수치만큼 고정 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_014', name: '생체 신호 교란', pack: 'biohazard',
+        type: 'skill', rarity: 'common', tier: 1, cost: 0,
+        keywords: ['virus'],
+        effects: [{ type: 'weakness', value: 1 }, { type: 'virus', value: 1 }],
+        description: '적에게 약화(1)를 부여합니다. 바이러스(1)를 부여합니다.'
+    },
+    {
+        id: 'BIO_015', name: '세포벽 강화', pack: 'biohazard',
+        type: 'skill', rarity: 'rare', tier: 1, cost: 2,
+        keywords: ['corrosion'],
+        effects: [{ type: 'shield', value: 15 }, { type: 'corrosion', value: 2 }],
+        description: '15의 방어도를 얻고, 적에게 부식(2)을 부여합니다.'
+    },
+
+    // === Tier 2 (10장) ===
+    {
+        id: 'BIO_016', name: '숙주 기생', pack: 'biohazard',
+        type: 'attack', rarity: 'rare', tier: 2, cost: 1,
+        keywords: [],
+        effects: [
+            { type: 'damage', value: 7 },
+            { type: 'conditionalAdd', condition: 'virusTarget', conditionValue: 5, addDamage: 7 }
+        ],
+        description: '적에게 7의 피해를 줍니다. 적에게 바이러스가 5 이상이면 추가로 7의 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_017', name: '부식 침투탄', pack: 'biohazard',
+        type: 'attack', rarity: 'rare', tier: 2, cost: 2,
+        keywords: ['corrosion', 'virus'],
+        effects: [
+            { type: 'damage', value: 12 },
+            { type: 'corrosion', value: 2 },
+            { type: 'conditionalAdd', condition: 'targetShieldZero', addVirus: 3 }
+        ],
+        description: '적에게 12의 피해를 줍니다. 부식(2)를 부여합니다. 적의 방어도가 0이면 바이러스(3)을 추가 부여합니다.'
+    },
+    {
+        id: 'BIO_018', name: '산성 분사', pack: 'biohazard',
+        type: 'attack', rarity: 'epic', tier: 2, cost: 1,
+        keywords: ['corrosion'],
+        effects: [
+            { type: 'damage', value: 8 },
+            { type: 'corrosion', value: 1 },
+            { type: 'damageByDebuff', debuff: 'corrosion', multiplier: 0 } // effect handler 밖에서 추가 부여 처리 까다로우므로
+            // (간편화를 위해 조건부 로직을 효과 핸들러에 하나 더 둠)
+        ],
+        description: '적에게 8의 피해를 줍니다. 부식(1)을 부여합니다. 적에게 부식이 이미 있으면 부식(1)를 추가로 부여합니다.'
+    },
+    {
+        id: 'BIO_019', name: '데이터 흡수', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 2, cost: 2,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForUtility', consume: 5, energy: 2, shield: 10 }],
+        description: '폭주(5): 적의 바이러스 스택을 5 소모합니다. 에너지를 2 얻고 10의 방어도를 얻습니다.'
+    },
+    {
+        id: 'BIO_020', name: '면역 억제제', pack: 'biohazard',
+        type: 'skill', rarity: 'rare', tier: 2, cost: 1,
+        keywords: ['virus'],
+        // '면역 억제제'의 경우 바이러스 2 부여 후 자신이 5인지 판정해야함 
+        effects: [
+            { type: 'virus', value: 2 },
+            { type: 'consumeVirusForUtility', consume: 0, draw: 1 } // consume 0으로 핸들러 수정 필요 (추가 구현 대기)
+        ],
+        description: '바이러스(2)를 부여합니다. 이번 턴에 적에게 부여된 바이러스 수치가 5 이상이면 카드를 1장 뽑습니다.'
+    },
+    {
+        id: 'BIO_021', name: '바이오 실드', pack: 'biohazard',
+        type: 'skill', rarity: 'rare', tier: 2, cost: 1,
+        keywords: ['corrosion'],
+        effects: [
+            // 절반 방어력 획득 이펙트는 전용 핸들러가 없으니 consumeVirusForShieldScale 사용 (consume 아님)
+            // 구현 편의상 virus * 0.5 쉴드 전용 효과를 하나 만들어야함
+            { type: 'consumeVirusForShieldScale', multiplier: 0.5, maxConsume: 0 }, // maxConsume 0이면 소모 안하도록 수정 필요
+            { type: 'corrosion', value: 1 }
+        ],
+        description: '적에게 쌓인 바이러스 스택의 절반(내림)만큼 방어도를 얻습니다. 부식(1)을 부여합니다.'
+    },
+    {
+        id: 'BIO_022', name: '세포 분열 촉진', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 2, cost: 2,
+        keywords: ['virus'],
+        effects: [
+            { type: 'virus', value: 5 },
+            { type: 'consumeVirusForUtility', consume: 0, conditionTarget: 5, energy: 1 }
+        ],
+        description: '바이러스(5)를 부여합니다. 적에게 이미 바이러스가 5 이상 있다면 에너지를 1 얻습니다.'
+    },
+    {
+        id: 'BIO_023', name: '감염원 추적', pack: 'biohazard',
+        type: 'skill', rarity: 'rare', tier: 2, cost: 2, // 밸패 반영: 코스트 2
+        keywords: ['virus'],
+        effects: [{ type: 'draw', value: 2 }, { type: 'virus', value: 1 }],
+        description: '카드를 2장 뽑습니다. 바이러스(1)를 부여합니다.'
+    },
+    {
+        id: 'BIO_024', name: '만성 감염 프로토콜', pack: 'biohazard',
+        type: 'power', rarity: 'rare', tier: 2, cost: 2,
+        keywords: ['virus'],
+        powerEffect: { type: 'autoVirus', value: 2 },
+        description: '(설치) 매 턴 시작 시, 적에게 자동으로 바이러스(2)를 부여합니다.'
+    },
+    {
+        id: 'BIO_025', name: '부식 필드', pack: 'biohazard',
+        type: 'power', rarity: 'epic', tier: 2, cost: 2,
+        keywords: ['corrosion'],
+        powerEffect: { type: 'autoCorrosion', value: 1 },
+        description: '(설치) 매 턴 시작 시, 적에게 부식(1)을 추가로 부여합니다.'
+    },
+
+    // === Tier 3 (10장) ===
+    {
+        id: 'BIO_026', name: '전이성 격발', pack: 'biohazard',
+        type: 'attack', rarity: 'epic', tier: 3, cost: 2,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForDamage', consume: 'all', multiplier: 2 }],
+        description: '폭주(전부): 적의 바이러스 스택을 전부 소모합니다. 소모한 수치의 2배만큼 고정 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_027', name: '괴사 침식', pack: 'biohazard',
+        type: 'attack', rarity: 'epic', tier: 3, cost: 3,
+        keywords: ['corrosion'],
+        // 방어 무력화는 복잡하므로 damage 관통 + 데미지 증폭 꼼수 혹은 쉴드 파괴 이펙트 구현 필요
+        effects: [
+            { type: 'damage', value: 20 },
+            { type: 'corrosion', value: 3 },
+            { type: 'conditionalAdd', condition: 'corrosionTarget', conditionValue: 5, destroyShield: true }
+        ],
+        description: '적에게 20의 피해를 줍니다. 부식(3)을 부여합니다. 적에게 부식이 5 이상이면 적의 방어도를 전부 제거합니다.'
+    },
+    {
+        id: 'BIO_028', name: '용해성 맹독', pack: 'biohazard',
+        type: 'attack', rarity: 'unique', tier: 3, cost: 2,
+        keywords: ['corrosion'],
+        effects: [{ type: 'meltToxin' }], // 밸패 반영 (방무딜 15 삭제)
+        description: '폭주(8): 적의 바이러스 스택을 8 소모합니다. 적에게 약화(2) + 부식(3)을 부여합니다.'
+    },
+    {
+        id: 'BIO_029', name: '생체 병기 투사', pack: 'biohazard',
+        type: 'attack', rarity: 'epic', tier: 3, cost: 2,
+        keywords: ['virus'],
+        effects: [
+            { type: 'damage', value: 5, hits: 4 },
+            { type: 'virus', value: 4 } // 1스택 4회 통합 부여
+        ],
+        description: '적에게 5의 피해를 4번 줍니다. 각 히트마다 바이러스(1)를 부여합니다.'
+    },
+    {
+        id: 'BIO_030', name: '대유행 선언', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 3, cost: 3,
+        keywords: ['virus', 'corrosion'],
+        effects: [
+            { type: 'virus', value: 8 },
+            { type: 'corrosion', value: 4 },
+            { type: 'draw', value: 2 }
+        ],
+        description: '적에게 바이러스(8)와 부식(4)을 즉시 부여합니다. 카드를 2장 뽑습니다.'
+    },
+    {
+        id: 'BIO_031', name: '항체 약탈', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 3, cost: 2,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForUtility', consume: 6, heal: 15, strength: 2 }],
+        description: '폭주(6): 적의 바이러스 스택을 6 소모합니다. 체력을 15 회복하고 힘(2)을 얻습니다.'
+    },
+    {
+        id: 'BIO_032', name: '변종 적응체', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 3, cost: 1, // 밸패 반영: 소모 수치만큼 방어도
+        keywords: [],
+        effects: [{ type: 'consumeVirusForShieldScale', consumeAll: false, maxConsume: 15, multiplier: 1 }],
+        description: '폭주(최대15): 적의 바이러스 스택을 최대 15까지 소모합니다. 소모한 스택 1당 1의 방어도를 얻습니다.'
+    },
+
+    // === Tier 4 (10장) ===
+    {
+        id: 'BIO_033', name: '보균자 역류', pack: 'biohazard',
+        type: 'skill', rarity: 'unique', tier: 4, cost: 2,
+        keywords: ['corrosion', 'virus'],
+        effects: [
+            { type: 'damageByDebuff', debuff: 'corrosion', multiplier: 6 },
+            { type: 'virus', value: 3 }
+        ],
+        description: '적에게 쌓인 부식 스택 1당 6의 고정 피해를 줍니다. 바이러스(3)를 부여합니다.'
+    },
+    {
+        id: 'BIO_034', name: '전염병 연구소', pack: 'biohazard',
+        type: 'power', rarity: 'rare', tier: 4, cost: 3,
+        keywords: ['virus'],
+        powerEffect: { type: 'viral_lab' }, // 바이러스 부여 효과시 가로채서 +1 하는 파워 
+        description: '(설치) 내가 적에게 바이러스 스택을 부여할 때마다, 수치가 1 추가로 증가합니다.'
+    },
+    {
+        id: 'BIO_035', name: '면역계 장악', pack: 'biohazard',
+        type: 'power', rarity: 'epic', tier: 4, cost: 3,
+        keywords: [],
+        powerEffect: { type: 'immune_system_takeover' },
+        description: '(설치) 내가 폭주할 때마다, 소모한 양의 절반(내림)만큼 방어도를 얻습니다.'
+    },
+    {
+        id: 'BIO_036', name: '팬데믹 스톰', pack: 'biohazard',
+        type: 'attack', rarity: 'unique', tier: 4, cost: 3,
+        keywords: ['corrosion'],
+        effects: [{ type: 'consumeVirusForDamage', consume: 'all', multiplier: 2, applyCorrosionRatio: 0.5 }],
+        description: '폭주(전부): 적의 바이러스 스택을 전부 소모합니다. 소모한 수치의 2배만큼 고정 피해를 주고 부식(소모량의 절반, 내림)을 부여합니다.'
+    },
+    {
+        id: 'BIO_037', name: '네크로시스', pack: 'biohazard',
+        type: 'attack', rarity: 'unique', tier: 4, cost: 3, // 밸패 반영: 기본 15피해
+        keywords: ['corrosion'],
+        effects: [
+            { type: 'damage', value: 15 },
+            { type: 'damageByDebuff', debuff: 'corrosion', multiplier: 5 }
+        ],
+        description: '적에게 15의 피해를 줍니다. 적에게 부식이 있으면 부식 스택 × 5만큼 추가 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_038', name: '세포 용해 폭탄', pack: 'biohazard',
+        type: 'attack', rarity: 'legendary', tier: 4, cost: 4,
+        keywords: ['virus', 'corrosion'],
+        effects: [
+            { type: 'damage', value: 30 },
+            { type: 'virus', value: 5 },
+            { type: 'corrosion', value: 5 },
+            // 적 힘 0으로 만드는 특수 처리 필요
+            { type: 'conditionalAdd', condition: 'virusTarget', conditionValue: 10, setStrengthZero: true } // effects.js conditionalAdd 에 예외 처리 구현 필요
+        ],
+        description: '적에게 30의 피해를 줍니다. 바이러스(5) + 부식(5)를 부여합니다. 적에게 바이러스가 10 이상이면 적의 힘을 0으로 만듭니다.'
+    },
+    {
+        id: 'BIO_039', name: '바이오 리퀴데이터', pack: 'biohazard',
+        type: 'attack', rarity: 'legendary', tier: 4, cost: 2,
+        keywords: ['accumulation', 'corrosion'],
+        accumulationTarget: 5,
+        accumulationStack: 0,
+        effects: [{ type: 'damage', value: 10 }],
+        accumulationEffects: [
+            { type: 'damageByDebuff', debuff: 'virus', multiplier: 3 },
+            { type: 'corrosion', value: 5 },
+            { type: 'shield', value: 15 }
+        ],
+        description: '적에게 10의 피해를 줍니다. [내 카드가 누적 5코스트 이상 소모 시] 적의 바이러스 스택 × 3 피해 + 부식(5) + 15 방어도.'
+    },
+    {
+        id: 'BIO_040', name: '오메가 변이', pack: 'biohazard',
+        type: 'skill', rarity: 'unique', tier: 4, cost: 2,
+        keywords: ['accumulation'],
+        accumulationTarget: 6,
+        accumulationStack: 0,
+        effects: [],
+        accumulationEffects: [
+            { type: 'consumeVirusForUtility', consume: 0, draw: 3, energy: 3 } // 밸패 반영 
+        ],
+        description: '[내 카드가 누적 6코스트 이상 소모 시] 에너지를 3 얻고, 카드를 3장 뽑습니다.'
+    },
+
+    // === Tier 5 (5장) ===
+    {
+        id: 'BIO_041', name: '생체정화 장막', pack: 'biohazard',
+        type: 'skill', rarity: 'unique', tier: 5, cost: 3,
+        keywords: [],
+        effects: [{ type: 'consumeVirusForUtility', consume: 10, heal: 20, shield: 30 }],
+        description: '폭주(10): 적의 바이러스 스택을 10 소모합니다. 30의 방어도를 얻고 체력을 20 회복합니다.'
+    },
+    {
+        id: 'BIO_042', name: '감염원 증폭기', pack: 'biohazard',
+        type: 'skill', rarity: 'epic', tier: 5, cost: 2,
+        keywords: ['accumulation', 'corrosion'],
+        accumulationTarget: 8,
+        accumulationStack: 0,
+        effects: [],
+        accumulationEffects: [
+            { type: 'corrosion', value: 5 },
+            { type: 'damageByDebuff', debuff: 'corrosion', multiplier: 5 } // 밸패 반영
+        ],
+        description: '[내 카드가 누적 8코스트 이상 소모 시] 부식(5)을 부여하고, 현재 적의 부식 스택 1당 5의 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_043', name: '바이러스 팜', pack: 'biohazard',
+        type: 'power', rarity: 'legendary', tier: 5, cost: 3,
+        keywords: [],
+        powerEffect: { type: 'virus_farm' },
+        description: '(설치) 턴 종료 시, 적에게 부여된 바이러스 스택의 20%(올림)만큼 추가 피해를 줍니다.'
+    },
+    {
+        id: 'BIO_044', name: '생물학적 무기 금고', pack: 'biohazard',
+        type: 'power', rarity: 'legendary', tier: 5, cost: 4, // 밸패 반영
+        keywords: [],
+        powerEffect: { type: 'bio_weapon_vault' },
+        description: '(설치) 내가 폭주할 때마다, 소모한 양의 절반(내림)만큼 영구 힘을 얻습니다.'
+    },
+    {
+        id: 'BIO_045', name: '절대 감염체', pack: 'biohazard',
+        type: 'power', rarity: 'mythic', tier: 5, cost: 5,
+        keywords: ['virus', 'corrosion'],
+        effects: [{ type: 'damage', target: 'self', value: 15 }], // HP 페널티 구현
+        powerEffect: { type: 'absolute_carrier', maxBonusStack: 5, value: 2 }, // param 자유
+        description: '체력을 15 희생합니다. 매 턴 시작 시 바이러스(5), 부식(2)을 부여합니다. 내가 폭주할 때마다 에너지를 1 얻습니다.'
     }
 ]);

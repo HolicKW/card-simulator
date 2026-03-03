@@ -2,4 +2,5 @@
 parse_cards.js
 parsed_cards.json
 start.bat
+sync.bat
 node_modules/
