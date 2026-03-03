@@ -46,7 +46,7 @@ export class CardAI {
         /** 학습 이력 */
         this.history = [];
         /** 학습 속도 (세대가 지날수록 감소) */
-        this.learningRate = 0.3;
+        this.learningRate = 0.2;
 
         this._initWeights();
     }
@@ -268,14 +268,18 @@ export class CardAI {
      * 핵심: "그 카드의 티어 Baseline 대비" 얼마나 기여했느냐로 조정
      */
     updateWeights(result, outcome) {
-        const baseFactor = outcome === 'win' ? 0.08 : -0.08;
+        const baseFactor = outcome === 'win' ? 0.06 : -0.06;
 
         for (const log of result.cardUsageLog) {
             const current = this.cardWeights.get(log.cardId) || 1;
             const baseline = TIER_BASELINES[this._getCardTier(log.cardId)] || 1;
 
             let factor = baseFactor;
-            // Baseline 위에서 증가만 둔화 (천장 효과)
+            // Baseline 아래면 감소 약간 완화 (급락 방지)
+            if (current < baseline * 0.7 && factor < 0) {
+                factor *= 0.6;
+            }
+            // Baseline 위에서 증가는 둔화 (천장 효과)
             if (current > baseline * 1.5 && factor > 0) {
                 factor *= 0.5;
             }
@@ -336,7 +340,7 @@ export class CardAI {
                 const confidence = Math.min(1, stats.uses / (results.length * 0.3));
 
                 // 조정량: 상대 편차 × 학습률 × 신뢰도 (증폭)
-                const adjustment = relativePerformance * this.learningRate * confidence * 3;
+                const adjustment = relativePerformance * this.learningRate * confidence * 2;
 
                 const newWeight = Math.max(
                     baseline * 0.15, // 최소값: Baseline의 15%
