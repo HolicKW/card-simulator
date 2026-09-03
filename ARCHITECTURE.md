@@ -62,9 +62,12 @@ app.js  →  simulator.js  →  engine.js  →  effects.js
 ### 등록된 팩
 | 팩 ID | 이름 | 카드 수 |
 |-------|------|---------|
-| `base` | 기본 공용 카드 | 26장 |
-| `overclock` | 오버클럭 코어 팩 | 45장 |
-| `dismantle` | 해체/재구축 팩 | 45장 |
+| `base` | 기본 공용 카드 | 40장 |
+| `overclock` | 오버클럭 코어 팩 | 40장 |
+| `dismantle` | 해체/재구축 팩 | 40장 |
+| `network` | 네트워크 프로토콜 팩 | 40장 |
+| `biohazard` | 바이오 해저드 팩 | 40장 |
+| `russian_roulette` | 러시안 룰렛팩 | 40장 |
 
 ### 새 팩 추가
 ```javascript

@@ -17,10 +17,14 @@ npx -y http-server . -p 8080 --cors -c-1
 
 ```
 js/
-├── cards.js       # 카드 데이터 (base, overclock, dismantle, russian_roulette 팩)
+├── cards.js       # 카드 데이터 (6개 팩, 총 240장)
 ├── effects.js     # 키워드 이펙트 처리
 ├── engine.js      # 전투 엔진
 ├── ai.js          # 학습 AI 및 덱 빌딩
 ├── simulator.js   # 시뮬레이션 실행 관리
 └── app.js         # 대시보드 UI
 ```
+
+카드팩은 `base`, `overclock`, `dismantle`, `network`, `biohazard`, `russian_roulette`이며 각각 40장입니다. `js/cards.js`는 삭제 전 커밋 `5a7015c`의 데이터를 복구한 버전입니다.
+
+현재 일부 카드 효과는 전투 엔진에 구현되지 않아 실행 중 `Unknown keyword` 경고가 발생하며 해당 효과가 적용되지 않습니다. 카드 목록 표시와 시뮬레이션 실행은 가능하지만, 해당 카드의 밸런스 분석에는 이 제한을 고려해야 합니다.
