@@ -595,12 +595,15 @@ export class BattleEngine {
         this.endTurn(entity);
     }
 
-    runMirrorBattle(state, aiStrategyA, aiStrategyB, maxTurns = 200) {
+    runMirrorBattle(state, aiStrategyA, aiStrategyB, maxTurns = 200, firstSide = null) {
+        if (firstSide !== null && firstSide !== 'A' && firstSide !== 'B')
+            throw new Error('firstSide must be A, B, or null.');
         this.drawCards(state.playerA, 5);
         this.drawCards(state.playerB, 5);
         this._doMirrorMulligan(state, 'A', aiStrategyA);
         this._doMirrorMulligan(state, 'B', aiStrategyB);
-        const order = Math.random() < 0.5 ? ['A', 'B'] : ['B', 'A'];
+        const first = firstSide ?? (Math.random() < 0.5 ? 'A' : 'B');
+        const order = first === 'A' ? ['A', 'B'] : ['B', 'A'];
         while (!state.winner && state.turn < maxTurns) {
             state.turn++;
             const entry = { turn: state.turn, actions: [], hpAfter: {} };

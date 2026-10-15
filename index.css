@@ -1671,6 +1671,30 @@ button {
   background-color: var(--grey-400);
 }
 
+.performance-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding-top: 20px;
+}
+.performance-controls label { display: grid; gap: 6px; color: var(--grey-700); font-size: 13px; }
+.performance-controls input { width: 150px; }
+.performance-controls input, .performance-controls select {
+  border: 1px solid var(--grey-300);
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  background: var(--surface);
+  color: var(--grey-900);
+}
+.performance-scroll { overflow-x: auto; }
+.performance-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.6; }
+.performance-table th, .performance-table td { text-align: left; padding: 12px; border-bottom: 1px solid var(--grey-200); min-width: 150px; }
+.performance-table thead { background: var(--grey-100); }
+.performance-table small { display: block; font-size: 11px; color: var(--grey-600); }
+.performance-table tr[data-card]:hover { background: var(--hover); }
+.performance-detail p { font-size: 12px; line-height: 1.6; margin: 8px 0; }
+
 /* ─── Responsive ─── */
 @media (max-width: 1100px) {
   .config-grid {

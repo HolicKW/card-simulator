@@ -1,0 +1,423 @@
+import { BattleEngine } from './engine.js';
+import { CardAI } from './ai.js';
+import { getAllCards, getCardById } from './cards.js';
+import { cloneCard } from './battle-rules.js';
+import { newWorldDataVersion } from './newworld-cards.js';
+
+export const EVALUATION_VERSION = 'paired-slot-v1';
+export const POLICY_VERSION = 'neutral-cardai-v1';
+export const PILOT_CARDS = ['BASE_001', 'BASE_002', 'BASE_005', 'BASE_008', 'BASE_018',
+    'BASE_019', 'BASE_027', 'BASE_033', 'BASE_040', 'OC_001', 'OC_021', 'DM_007',
+    'DM_014', 'NW_011', 'BIO_026', 'RU_001'];
+const ENVIRONMENTS = { 1: [60, 3], 2: [115, 3], 3: [190, 3], 4: [295, 4], 5: [370, 4] };
+const EMPTY = { id: 'EVAL_EMPTY', name: '빈 슬롯', type: 'skill', pack: 'evaluation',
+    rarity: 'common', tier: 1, cost: 0, effects: [], keywords: [] };
+const SCENARIOS = ['basic', 'developed', 'prepared'];
+const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+const round = value => Math.round(value * 10000) / 10000;
+
+function prepareConditions(source, caster, target, card) {
+    const visit = value => {
+        if (!value || typeof value !== 'object') return;
+        if (value.condition?.type) {
+            const condition = value.condition, amount = condition.value || 0;
+            switch (condition.type) {
+                case 'hpBelow': caster.hp = Math.min(caster.hp, Math.floor(caster.maxHp * amount / 100)); break;
+                case 'targetHpBelow': target.hp = Math.min(target.hp, Math.floor(target.maxHp * amount / 100)); break;
+                case 'enemyHasWeakness': target.weakness = Math.max(1, target.weakness); break;
+                case 'handEmpty': caster.hand = []; break;
+                case 'shieldZero': target.shield = 0; break;
+                case 'virusMin': case 'virusTarget': target.virus = Math.max(target.virus, amount); break;
+                case 'corrosionTarget': case 'corrosionMin': target.corrosion = Math.max(target.corrosion, amount, 1); break;
+                case 'virusAppliedThisTurnMin': target.turn.virusAppliedThisTurn = amount; break;
+                case 'dismantledThisBattle': caster.dismantledThisBattle = amount; break;
+                case 'dismantledThisTurn': caster.turn.dismantledThisTurn = amount; break;
+                case 'networkCardsPlayed': caster.turn.networkCardsPlayedThisTurn = amount; break;
+                case 'cardsPlayedThisTurn': caster.turn.cardsPlayedThisTurn = amount; break;
+                case 'gambleSuccessThisTurn': caster.turn.gambleSuccessThisTurn = amount; break;
+                case 'luckMin': caster.luck = Math.max(caster.luck, amount); break;
+                case 'accumulation': card.accumulationCount = Math.max(card.accumulationCount || 0, amount); break;
+            }
+        }
+        for (const child of Object.values(value)) visit(child);
+    };
+    visit(source);
+}
+
+// Every engine/effect/AI random call is synchronous inside this scope. Never await here.
+export function withSeed(seed, action) {
+    const original = Math.random;
+    let value = seed >>> 0;
+    Math.random = () => {
+        value += 0x6D2B79F5;
+        let next = Math.imul(value ^ value >>> 15, value | 1);
+        next ^= next + Math.imul(next ^ next >>> 7, next | 61);
+        return ((next ^ next >>> 14) >>> 0) / 4294967296;
+    };
+    try { return action(); }
+    finally { Math.random = original; }
+}
+
+export function interval(values) {
+    const average = mean(values);
+    if (values.length < 2) return { mean: average, low: null, high: null };
+    const variance = values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length - 1);
+    const margin = (values.length < 30 ? 2.58 : 1.96) * Math.sqrt(variance / values.length);
+    return { mean: round(average), low: round(average - margin), high: round(average + margin) };
+}
+
+function snapshot(entity) {
+    const fields = ['hp', 'shield', 'energy', 'strength', 'weakness', 'virus', 'corrosion',
+        'networkStacks', 'overclockStacks', 'luck'];
+    return Object.fromEntries(fields.map(key => [key, entity[key]]));
+}
+
+function observe(engine, caster, subject) {
+    const metrics = { damageHp: 0, damageShield: 0, absorbed: 0, healing: 0,
+        shieldGenerated: 0, selfDamageHp: 0, selfDamageShield: 0, drawn: 0, paidEnergy: 0, testedUses: 0 };
+    const wrap = (name, measure) => {
+        const original = engine[name].bind(engine);
+        engine[name] = (...args) => measure(original, args);
+    };
+    wrap('applyDamage', (original, args) => {
+        const [target] = args, before = snapshot(target);
+        const result = original(...args);
+        const hpLost = Math.max(0, before.hp - target.hp), shieldLost = Math.max(0, before.shield - target.shield);
+        if (target === caster) metrics.absorbed += shieldLost;
+        else { metrics.damageHp += hpLost; metrics.damageShield += shieldLost; }
+        return result;
+    });
+    wrap('applySelfDamage', (original, args) => {
+        const [target] = args, before = snapshot(target), result = original(...args);
+        if (target === caster) {
+            metrics.selfDamageHp += Math.max(0, before.hp - target.hp);
+            metrics.selfDamageShield += Math.max(0, before.shield - target.shield);
+        }
+        return result;
+    });
+    // Nested effects must not credit the same heal/shield once at each nesting level.
+    const frames = [];
+    const trace = (owner, name) => {
+        const original = owner[name].bind(owner);
+        owner[name] = (...args) => {
+            const frame = { hp: caster.hp, shield: caster.shield, childHp: 0, childShield: 0 };
+            frames.push(frame);
+            try { return original(...args); }
+            finally {
+                frames.pop();
+                const hp = caster.hp - frame.hp, shield = caster.shield - frame.shield;
+                metrics.healing += Math.max(0, hp - frame.childHp);
+                metrics.shieldGenerated += Math.max(0, shield - frame.childShield);
+                if (frames.length) {
+                    frames.at(-1).childHp += hp;
+                    frames.at(-1).childShield += shield;
+                }
+            }
+        };
+    };
+    trace(engine.effectRegistry, 'execute');
+    trace(engine, 'checkCoreTriggers');
+    trace(engine, 'heal');
+    wrap('drawCards', (original, args) => {
+        const result = original(...args);
+        if (args[0] === caster) metrics.drawn += result;
+        return result;
+    });
+    wrap('_executeCard', (original, args) => {
+        const [entity, , index] = args;
+        const cost = engine.canPlayCard(entity, index) ? engine.getEffectiveCost(entity.hand[index], entity) : 0;
+        const tested = entity.hand[index] === subject;
+        const paid = Math.min(entity.energy, cost), result = original(...args);
+        if (entity === caster && result) {
+            metrics.paidEnergy += paid;
+            metrics.testedUses += Number(tested);
+        }
+        return result;
+    });
+    return metrics;
+}
+
+export function probeCard(cardId, { scenario = 'basic', seed = 1, followTurns = 5, control = false } = {}) {
+    const source = getCardById(cardId);
+    if (!source || !SCENARIOS.includes(scenario)) throw new Error('Unknown card or probe scenario.');
+    return withSeed(seed, () => {
+        const engine = new BattleEngine();
+        const [hp, energy] = ENVIRONMENTS[source.tier];
+        const deck = Array.from({ length: 30 }, (_, index) => getCardById(index % 2 ? 'BASE_005' : 'BASE_001'));
+        const state = engine.createMirrorBattleState(deck, deck, { hp, energy });
+        const caster = state.playerA, target = state.playerB, card = cloneCard(control ? EMPTY : source);
+        state.turn = 1;
+        caster.hand = ['BASE_001', 'BASE_005', 'BASE_001', 'BASE_005'].map(id => cloneCard(getCardById(id)));
+        if (scenario !== 'basic') {
+            const ready = scenario === 'prepared';
+            caster.hp = Math.floor(hp * (ready ? 0.25 : 0.6));
+            target.hp = Math.floor(hp * (ready ? 0.4 : 0.6));
+            caster.strength = ready ? 5 : 3;
+            caster.shield = ready ? 24 : 12;
+            caster.overclockStacks = ready ? 4 : 2;
+            caster.networkStacks = ready ? 8 : 3;
+            caster.luck = ready ? 10 : 5;
+            target.virus = ready ? 15 : 6;
+            target.shield = ready ? 24 : 12;
+            card.accumulationCount = ready ? (card.accumulationTarget || 0) : 0;
+            caster.lastPlayedCard = cloneCard(getCardById('BASE_005'));
+            if (ready) {
+                caster.overflowNext = card.overflowMin || 0;
+                const previous = caster.lastPlayedCard;
+                if (card.protocolCondition === 'attack') previous.type = 'attack';
+                if (card.protocolCondition === 'sameType') previous.type = card.type;
+                if (card.protocolCondition === 'differentType') previous.type = card.type === 'skill' ? 'attack' : 'skill';
+                if (card.protocolCondition === 'network') previous.keywords = ['network'];
+                if (card.protocolCondition === 'costHigher') previous.cost = card.cost + 1;
+                if (card.protocolCondition === 'costLower' || card.protocolCondition === 'zeroCost') previous.cost = 0;
+                if (card.protocolCondition === 'luckMin') caster.luck = Math.max(caster.luck, card.protocolConditionValue || 0);
+                prepareConditions(source, caster, target, card);
+            }
+        }
+        const before = snapshot(caster), enemyBefore = snapshot(target);
+        caster.hand.push(card);
+        const index = caster.hand.length - 1, effectiveCost = engine.getEffectiveCost(card, caster);
+        const metrics = observe(engine, caster, card);
+        const playable = engine.canPlayCard(caster, index);
+        if (playable) engine._mirrorPlayCard(state, 'A', index);
+        const immediate = { ...metrics, shieldChange: caster.shield - before.shield,
+            hpChange: caster.hp - before.hp, energyChange: caster.energy - before.energy,
+            strengthChange: caster.strength - before.strength,
+            weaknessApplied: target.weakness - enemyBefore.weakness,
+            virusChange: target.virus - enemyBefore.virus,
+            corrosionApplied: target.corrosion - enemyBefore.corrosion,
+            shieldRemoved: Math.max(0, enemyBefore.shield - target.shield),
+            networkChange: caster.networkStacks - before.networkStacks,
+            overclockChange: caster.overclockStacks - before.overclockStacks,
+            luckChange: caster.luck - before.luck,
+            stateAfter: snapshot(caster), enemyAfter: snapshot(target) };
+        const checkpoints = [];
+        // This is a scripted follow-up diagnostic, not an estimate of condition frequency.
+        for (let turn = 1; playable && turn <= followTurns && !state.winner; turn++) {
+            state.turn++;
+            engine.endTurn(caster);
+            engine.startTurn(caster);
+            const rebuilt = caster.hand.indexOf(card);
+            if (rebuilt >= 0 && engine.canPlayCard(caster, rebuilt)) engine._mirrorPlayCard(state, 'A', rebuilt);
+            for (const id of ['BASE_005', 'BASE_001']) {
+                const held = caster.hand.findIndex(next => next !== card && next.id === id);
+                if (held >= 0 && engine.canPlayCard(caster, held)) engine._mirrorPlayCard(state, 'A', held);
+            }
+            if (turn === 3 || turn === 5) checkpoints.push({ turn, ...metrics,
+                ownHp: caster.hp, shield: caster.shield, enemyHp: target.hp });
+        }
+        return { scenario, playable, effectiveCost, before, enemyBefore, immediate, checkpoints,
+            attackUnits: playable ? (immediate.damageHp + immediate.damageShield) / 6 : null,
+            defenseUnits: playable ? Math.max(0, immediate.shieldChange) / 6 : null,
+            uses: metrics.testedUses,
+            selfDefeated: state.winner === 'B' };
+    });
+}
+
+export function measureCard(cardId, samples = 50, seed = 1) {
+    return Object.fromEntries(SCENARIOS.map(scenario => {
+        const runs = Array.from({ length: samples }, (_, index) => {
+            const run = probeCard(cardId, { scenario, seed: seed + index });
+            const control = probeCard(cardId, { scenario, seed: seed + index, control: true });
+            run.checkpoints = run.checkpoints.map(point => {
+                const baseline = control.checkpoints.find(other => other.turn === point.turn);
+                return baseline ? Object.fromEntries(Object.keys(point).map(key => [key, key === 'turn' ? point[key] : point[key] - baseline[key]])) : null;
+            }).filter(Boolean);
+            return run;
+        });
+        const first = runs[0];
+        const numeric = Object.keys(first.immediate).filter(key => typeof first.immediate[key] === 'number');
+        return [scenario, { scenario, samples, playableRate: mean(runs.map(run => Number(run.playable))),
+            effectiveCost: first.effectiveCost,
+            immediate: Object.fromEntries(numeric.map(key => [key, round(mean(runs.map(run => run.immediate[key])))])),
+            attackUnits: first.playable ? round(mean(runs.map(run => run.attackUnits))) : null,
+            defenseUnits: first.playable ? round(mean(runs.map(run => run.defenseUnits))) : null,
+            selfDefeatRate: mean(runs.map(run => Number(run.selfDefeated))),
+            uses: round(mean(runs.map(run => run.uses))),
+            checkpoints: [3, 5].map(turn => {
+                const reached = runs.map(run => run.checkpoints.find(point => point.turn === turn)).filter(Boolean);
+                return { turn, reached: reached.length,
+                    metrics: reached.length ? Object.fromEntries(Object.keys(reached[0]).map(key => [key, round(mean(reached.map(point => point[key])))])) : null };
+            }) }];
+    }));
+}
+
+function fillDeck(pool, count, offset = 0) {
+    const deck = [], installed = new Set();
+    for (let index = 0; deck.length < count && index < count * pool.length * 2; index++) {
+        const card = pool[(index + offset) % pool.length];
+        if (card.type === 'power' && (installed.has(card.id) || installed.size >= 2)) continue;
+        deck.push(card);
+        if (card.type === 'power') installed.add(card.id);
+    }
+    if (deck.length !== count) throw new Error('평가 덱을 구성할 수 없습니다.');
+    return deck;
+}
+
+export function benchmarkDecks(cardId, context = 'general', deckSize = 20, variant = 0) {
+    const card = getCardById(cardId), cards = getAllCards();
+    if (!card || !['general', 'dedicated'].includes(context) || !Number.isInteger(deckSize) || deckSize < 10 || deckSize > 40)
+        throw new Error('Invalid benchmark configuration.');
+    const eligible = cards.filter(next => next.tier <= card.tier && next.id !== cardId);
+    const base = eligible.filter(next => next.pack === 'base' && next.cost <= 3);
+    const pack = eligible.filter(next => next.pack === card.pack && next.cost <= 3);
+    const own = context === 'dedicated' && card.pack !== 'base'
+        ? [...fillDeck(base, Math.floor((deckSize - 1) / 2), variant),
+            ...fillDeck(pack, Math.ceil((deckSize - 1) / 2), variant)]
+        : fillDeck(base, deckSize - 1, variant);
+    const opponents = ['base', 'overclock', 'dismantle', 'network', 'biohazard', 'russian_roulette'];
+    const opponentPack = opponents[variant % opponents.length];
+    const opponent = fillDeck(cards.filter(next => next.tier <= card.tier && next.pack === opponentPack && next.cost <= 3), deckSize, variant);
+    return { candidate: [card, ...own], reference: [getCardById('BASE_001'), ...own],
+        empty: [EMPTY, ...own], opponent, hp: ENVIRONMENTS[card.tier][0], energy: ENVIRONMENTS[card.tier][1] };
+}
+
+function policy() {
+    const ai = new CardAI();
+    // Metadata and training results do not give the evaluated card a head start.
+    for (const id of ai.cardWeights.keys()) ai.cardWeights.set(id, 1);
+    ai.generation = 20;
+    return (state, engine, phase) => ai.makeDecision(state, engine, phase);
+}
+
+export function pairedTrial(cardId, context, seed, { deckSize = 20, maxTurns = 200 } = {}) {
+    const decks = benchmarkDecks(cardId, context, deckSize, seed % 6);
+    const strategy = policy(), results = {}, usage = { played: 0, uses: 0, draws: 0, selfDefeats: 0 };
+    for (const arm of ['candidate', 'reference', 'empty']) {
+        const scores = [];
+        for (const firstSide of ['A', 'B']) {
+            const result = withSeed(seed, () => {
+                const engine = new BattleEngine();
+                const state = engine.createMirrorBattleState(decks[arm], decks.opponent, decks);
+                return engine.runMirrorBattle(state, strategy, strategy, maxTurns, firstSide);
+            });
+            scores.push(result.winner === 'A' ? 1 : result.winner === 'draw' ? 0.5 : 0);
+            if (arm === 'candidate') {
+                const uses = result.cardUsageLogA.filter(log => log.cardId === cardId).length;
+                usage.played += Number(uses > 0); usage.uses += uses;
+                usage.draws += Number(result.winner === 'draw');
+                usage.selfDefeats += Number(result.winner === 'B' && result.playerAHp <= 0);
+            }
+        }
+        results[arm] = mean(scores);
+    }
+    return { seed, ...results, ...usage };
+}
+
+export function summarizeTrials(trials) {
+    const delta = interval(trials.map(trial => trial.candidate - trial.reference));
+    const benefit = interval(trials.map(trial => trial.candidate - trial.empty));
+    const anchor = interval(trials.map(trial => trial.reference - trial.empty));
+    const index = anchor.mean > 0 ? benefit.mean / anchor.mean : null;
+    const residual = index === null ? null : interval(trials.map(trial =>
+        (trial.candidate - trial.empty) - index * (trial.reference - trial.empty)));
+    const calibrated = trials.length >= 200 && anchor.low > 0 && index !== null;
+    return { seeds: trials.length, matches: trials.length * 6, delta, benefit, anchor,
+        index: index === null ? null : round(index), calibrated,
+        indexInterval: index === null || residual.low === null ? null :
+            [round(index + residual.low / anchor.mean), round(index + residual.high / anchor.mean)],
+        playedRate: mean(trials.map(trial => trial.played / 2)),
+        avgUses: mean(trials.map(trial => trial.uses / 2)),
+        drawRate: mean(trials.map(trial => trial.draws / 2)),
+        defeatRate: mean(trials.map(trial => trial.selfDefeats / 2)),
+        scores: Object.fromEntries(['candidate', 'reference', 'empty'].map(arm => [arm, mean(trials.map(trial => trial[arm]))])),
+        trials };
+}
+
+export function calibrateTiers(cards) {
+    const targets = { 1: 1 };
+    for (const tier of [2, 3, 4, 5]) {
+        const values = Object.entries(cards).filter(([id, result]) => getCardById(id).tier === tier && result.general?.calibrated)
+            .map(([, result]) => result.general.index).filter(Number.isFinite).sort((a, b) => a - b);
+        if (values.length >= 3) {
+            const median = round((values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2);
+            if (median > 0) targets[tier] = median;
+        }
+    }
+    return targets;
+}
+
+export class PerformanceEvaluator {
+    constructor() { this.running = false; }
+    stop() { this.running = false; }
+    async run({ cardIds = PILOT_CARDS, seeds = 50, probeSamples = 50, seed = 1, deckSize = 20, maxTurns = 200 } = {}, onProgress = () => {}) {
+        if (this.running) throw new Error('이미 성능을 측정 중입니다.');
+        if (!Number.isInteger(seeds) || seeds < 2 || seeds > 5000 || !Number.isInteger(probeSamples) || probeSamples < 1 || probeSamples > 1000
+            || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 200)
+            throw new Error('평가 시드 수 또는 설정이 유효하지 않습니다.');
+        const ids = [...new Set(cardIds)];
+        if (!ids.length || ids.some(id => !getAllCards().some(card => card.id === id))) throw new Error('평가할 일반 카드를 선택해 주세요.');
+        benchmarkDecks(ids[0], 'general', deckSize);
+        this.running = true;
+        const report = { evaluationVersion: EVALUATION_VERSION, policyVersion: POLICY_VERSION, dataVersion: newWorldDataVersion,
+            config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns }, status: 'running',
+            referenceCard: 'BASE_001', environments: ENVIRONMENTS, cards: {}, tierTargets: { 1: 1 }, targetSource: 'measured-median-draft' };
+        let current = 0;
+        try {
+            for (const id of ids) {
+                if (!this.running) break;
+                const result = { probes: measureCard(id, probeSamples, seed) };
+                for (const context of ['general', 'dedicated']) {
+                    const trials = [];
+                    for (let index = 0; index < seeds && this.running; index++) {
+                        trials.push(pairedTrial(id, context, seed + index, { deckSize, maxTurns }));
+                        onProgress({ current: ++current, total: ids.length * seeds * 2, cardId: id, context, seeds: index + 1 });
+                        if (index % 5 === 4) await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+                    if (trials.length) result[context] = summarizeTrials(trials);
+                    if (!this.running) break;
+                }
+                report.cards[id] = result;
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            report.status = this.running ? 'complete' : 'cancelled';
+            report.tierTargets = calibrateTiers(report.cards);
+            return report;
+        } finally { this.running = false; }
+    }
+}
+
+export function validatePerformanceReport(report) {
+    if (report == null) return null;
+    if (report.evaluationVersion !== EVALUATION_VERSION || report.policyVersion !== POLICY_VERSION
+        || report.dataVersion !== newWorldDataVersion || !report.config || !report.cards || !report.tierTargets)
+        throw new Error('현재 평가 버전과 다른 성능 파일입니다. 기존 파일은 보관하고 새로 측정해 주세요.');
+    if (!['complete', 'cancelled'].includes(report.status)) throw new Error('완료되지 않은 성능 파일입니다.');
+    const config = report.config;
+    if (!Array.isArray(config.cardIds) || !config.cardIds.length || config.cardIds.length > 245
+        || new Set(config.cardIds).size !== config.cardIds.length || config.cardIds.some(id => !getAllCards().some(card => card.id === id))
+        || !Number.isInteger(config.seeds) || config.seeds < 2 || config.seeds > 5000
+        || !Number.isInteger(config.probeSamples) || config.probeSamples < 1 || config.probeSamples > 1000
+        || !Number.isInteger(config.seed) || config.seed < 0 || config.seed > 0xffffffff
+        || !Number.isInteger(config.deckSize) || config.deckSize < 10 || config.deckSize > 40
+        || !Number.isInteger(config.maxTurns) || config.maxTurns < 1 || config.maxTurns > 200)
+        throw new Error('유효하지 않은 성능 평가 설정입니다.');
+    const clean = JSON.parse(JSON.stringify(report));
+    for (const [id, result] of Object.entries(report.cards)) {
+        if (!config.cardIds.includes(id) || !result.probes) throw new Error('유효하지 않은 카드 성능 데이터입니다.');
+        for (const scenario of SCENARIOS) {
+            const probe = result.probes[scenario];
+            if (!probe || !Number.isInteger(probe.samples) || probe.samples !== config.probeSamples
+                || !Number.isFinite(probe.playableRate) || probe.playableRate < 0 || probe.playableRate > 1
+                || !Number.isFinite(probe.effectiveCost) || probe.effectiveCost < 0 || !Array.isArray(probe.checkpoints)
+                || !probe.immediate || Object.values(probe.immediate).some(value => !Number.isFinite(value)))
+                throw new Error('유효하지 않은 조건별 측정값입니다.');
+        }
+        if (Object.keys(result.probes).some(key => !SCENARIOS.includes(key))) throw new Error('알 수 없는 측정 조건입니다.');
+        for (const context of ['general', 'dedicated']) {
+            const data = result[context];
+            if (!data && report.status === 'complete') throw new Error('덱별 측정값이 누락되었습니다.');
+            if (data && (!Array.isArray(data.trials) || !data.trials.length || data.trials.length > config.seeds
+                || (report.status === 'complete' && data.trials.length !== config.seeds)
+                || new Set(data.trials.map(trial => trial.seed)).size !== data.trials.length
+                || data.trials.some(trial => !Number.isInteger(trial.seed) || trial.seed < config.seed || trial.seed >= config.seed + config.seeds
+                    || ['candidate', 'reference', 'empty'].some(arm => !Number.isFinite(trial[arm]) || trial[arm] < 0 || trial[arm] > 1)
+                    || ['played', 'uses', 'draws', 'selfDefeats'].some(key => !Number.isInteger(trial[key]) || trial[key] < 0 || trial[key] > (key === 'uses' ? 12000 : 2)))))
+                throw new Error('유효하지 않은 전투 표본입니다.');
+            if (data) clean.cards[id][context] = summarizeTrials(data.trials);
+        }
+    }
+    if (report.status === 'complete' && Object.keys(report.cards).length !== config.cardIds.length) throw new Error('카드 측정값이 누락되었습니다.');
+    clean.tierTargets = calibrateTiers(clean.cards);
+    return clean;
+}

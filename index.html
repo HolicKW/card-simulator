@@ -44,6 +44,7 @@
       <nav class="nav" aria-label="분석 결과">
         <p class="nav-label">분석</p>
         <button class="tab-btn active" data-tab="tierlist"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg>밸류 티어</button>
+        <button class="tab-btn" data-tab="performance"><svg class="icon" aria-hidden="true"><use href="#i-scale"/></svg>성능 측정</button>
         <button class="tab-btn" data-tab="warnings"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>밸런스 경고</button>
         <button class="tab-btn" data-tab="synergy"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>시너지 분석</button>
         <button class="tab-btn" data-tab="crosspack"><svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg>팩 교차</button>
@@ -69,11 +70,11 @@
         <header class="page-header">
           <div>
             <h1 class="page-title">카드 밸런스 시뮬레이터</h1>
-            <p class="page-desc">학습형 AI가 덱을 짜고 반복 대전하며 카드별 실전 가치를 측정해요.</p>
+            <p class="page-desc">카드의 효과와 덱 한 슬롯을 교체했을 때의 실전 기여를 따로 측정해요.</p>
           </div>
           <div class="page-actions">
             <button class="btn btn-danger" id="btn-stop" disabled>중지</button>
-            <button class="btn btn-primary" id="btn-start">시뮬레이션 시작</button>
+            <button class="btn btn-primary" id="btn-start">학습 대전 시작</button>
           </div>
         </header>
 
@@ -118,16 +119,27 @@
               <!-- 동적으로 채워짐 -->
             </div>
           </div>
+          <div class="performance-controls">
+            <label>측정 대상 <select id="evaluation-scope"><option value="pilot">대표 카드 (최대 16장)</option><option value="all">선택한 팩·티어의 전체 카드</option></select></label>
+            <label>카드·덱별 시드 수 <input id="evaluation-seeds" type="number" min="2" max="5000" value="50"></label>
+            <label>시작 시드 <input id="evaluation-seed" type="number" min="0" max="4294967295" value="1"></label>
+            <button class="btn btn-primary" id="btn-evaluate">성능 측정 시작</button>
+          </div>
+          <p class="config-hint">일반 덱·팩 전용 덱에서 같은 슬롯을 교체해 비교해요. 성능지수 확정은 200개 이상 시드와 기준 카드의 기여 확인이 필요해요.</p>
         </section>
 
         <!-- Gen Results (실시간) -->
         <div class="gen-results" id="gen-results"></div>
 
         <!-- Panels -->
+        <section class="tab-panel card" id="panel-performance">
+          <header class="panel-head"><h2>카드별 성능 측정</h2><p>공격 6·실드 6을 각각 기준 1로 표시해요. 효과량과 승률 변화는 서로 다른 지표예요.</p></header>
+          <div id="performance-results"><div class="empty-state"><p>성능 측정을 시작하면 기본·조건별 효과와 덱 교체 결과가 표시돼요.</p></div></div>
+        </section>
         <section class="tab-panel card active" id="panel-tierlist">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg></span>밸류 티어</h2>
-            <p>카드별 실전 가치를 Baseline 대비로 S~F 등급에 배치해요. 카드에 마우스를 올리면 상세 통계가 보여요.</p>
+            <p>성능지수가 확인된 카드만 티어 기준 초안 대비로 배치해요. 표본이나 기준 기여가 부족한 카드는 미평가(?)예요.</p>
           </header>
           <div id="tier-list">
             <div class="empty-state">
@@ -151,7 +163,7 @@
         <section class="tab-panel card" id="panel-synergy">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg></span>시너지 분석</h2>
-            <p>함께 쓸 때 승률이 크게 오르거나 떨어지는 카드 조합이에요.</p>
+            <p>학습 대전에서 함께 편입된 덱의 승률이에요. 한 슬롯 교체 실험과 구분해요.</p>
           </header>
           <div id="synergy-analysis">
             <div class="empty-state">
@@ -175,7 +187,7 @@
         <section class="tab-panel card" id="panel-heatmap">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg></span>티어 히트맵</h2>
-            <p>티어 안에서 Baseline 대비 카드 가치를 색으로 보여줘요. 빨강은 OP, 초록은 적정, 회색은 UP이에요.</p>
+            <p>실측 성능지수를 티어 기준 초안과 비교해요. 측정이 충분하지 않은 카드는 회색으로 표시해요.</p>
           </header>
           <div id="tier-heatmap">
             <div class="empty-state">
@@ -187,7 +199,7 @@
         <section class="tab-panel card" id="panel-packs">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></span>팩별 통계</h2>
-            <p>팩별 카드 사용 횟수와 승률이에요.</p>
+            <p>팩별 카드 편입 표본의 승률과 사용 횟수예요. 재사용 횟수로 승패를 중복 집계하지 않아요.</p>
           </header>
           <div id="pack-stats">
             <div class="empty-state">
@@ -199,7 +211,7 @@
         <section class="tab-panel card" id="panel-graph">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg></span>학습 그래프</h2>
-            <p>세대가 진행되면서 승률이 어떻게 바뀌는지 보여줘요.</p>
+            <p>학습 대전의 A측 승률 추이예요. 카드 성능 향상 지표와는 구분해요.</p>
           </header>
           <div class="graph-container">
             <canvas id="learning-canvas"></canvas>

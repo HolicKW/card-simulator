@@ -8,11 +8,14 @@
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
 import { getAllCards } from './cards.js';
+import { PerformanceEvaluator, validatePerformanceReport } from './performance.js';
 
 export class Simulator {
     constructor() {
         this.engine = new BattleEngine();
         this.ai = new CardAI();
+        this.evaluator = new PerformanceEvaluator();
+        this.performanceReport = null;
         this.isRunning = false;
         this.battleLog = []; // 전투별 덱 + 결과 기록
         this.onProgress = null;
@@ -40,6 +43,27 @@ export class Simulator {
 
     stop() {
         this.isRunning = false;
+        this.evaluator.stop();
+    }
+
+    async runPerformance(config, onProgress) {
+        if (this.isRunning || this.evaluator.running) throw new Error('진행 중인 작업을 먼저 마쳐 주세요.');
+        const report = await this.evaluator.run(config, onProgress);
+        this.performanceReport = report;
+        return report;
+    }
+
+    exportData() {
+        return { ...this.ai.exportWeights(), performance: this.performanceReport };
+    }
+
+    importData(data) {
+        if (this.isRunning || this.evaluator.running) throw new Error('진행 중에는 데이터를 불러올 수 없습니다.');
+        const performance = validatePerformanceReport(data?.performance);
+        if (data?.kind === 'performance-report') {
+            if (data.schemaVersion !== 1 || !data.performance) throw new Error('유효하지 않은 성능 파일입니다.');
+        } else this.ai.importWeights(data);
+        this.performanceReport = performance;
     }
 
     /**
@@ -47,7 +71,9 @@ export class Simulator {
      * 티어별로 두 AI가 각자 덱을 짜서 대결
      */
     async runMirrorMode(config) {
+        if (this.isRunning || this.evaluator.running) throw new Error('이미 작업 중입니다.');
         this.isRunning = true;
+        try {
 
         // 전역 세대 카운터 초기화 (최초 실행 시에만)
         if (typeof this.globalGen === 'undefined') {
@@ -127,12 +153,13 @@ export class Simulator {
                     }
 
                     // 학습: A 사이드 사용 카드 (고티어 매치일수록 가중치 큼)
-                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogA }, aOutcome, tc.tier);
+                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogA, deck: deckA }, aOutcome, tc.tier);
                     // 학습: B 사이드 사용 카드
-                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogB }, bOutcome, tc.tier);
+                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogB, deck: deckB }, bOutcome, tc.tier);
 
                     // A 사이드 결과: A가 이기면 win, B가 이기면 lose
                     genResults.push({
+                        side: 'A',
                         game: game + 1,
                         enemy: tc.label,
                         result: {
@@ -147,6 +174,7 @@ export class Simulator {
                     });
                     // B 사이드 결과: B가 이기면 win, A가 이기면 lose
                     genResults.push({
+                        side: 'B',
                         game: game + 1,
                         enemy: tc.label,
                         result: {
@@ -197,8 +225,7 @@ export class Simulator {
                 }
             }
 
-            const genResult = this.ai.endGeneration(genResults.filter(r => r.result.winner !== 'draw'));
-            genResult.draws = genResults.filter(r => r.result.winner === 'draw').length / 2;
+            const genResult = this.ai.endGeneration(genResults);
             allResults.push(genResult);
 
 
@@ -210,6 +237,7 @@ export class Simulator {
         this.isRunning = false;
         if (this.onComplete) this.onComplete(allResults);
         return allResults;
+        } finally { this.isRunning = false; }
     }
 
     /**
@@ -245,22 +273,34 @@ export class Simulator {
      * 분석 결과 가져오기
      */
     getAnalysis() {
-        const tierList = this.ai.getCardTierList();
+        const tierList = this.ai.getCardTierList().map(card => {
+            const performance = this.performanceReport?.cards[card.id];
+            const general = performance?.general;
+            const baseline = this.performanceReport?.tierTargets[card.tier] ?? null;
+            const ratio = general?.calibrated && baseline ? general.index / baseline : null;
+            const grade = value => value >= 1.5 ? 'S' : value >= 1.2 ? 'A' : value >= 0.9 ? 'B' : value >= 0.65 ? 'C' : value >= 0.45 ? 'D' : 'F';
+            let valueTier = '?';
+            if (ratio !== null && general.indexInterval
+                && grade(general.indexInterval[0] / baseline) === grade(general.indexInterval[1] / baseline)) valueTier = grade(ratio);
+            return { ...card, performance, baseline, ratio, valueTier };
+        }).sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
         const history = this.ai.history;
 
         // OP/UP 카드 감지 (Baseline 대비 비율로 판정)
         const warnings = [];
         for (const card of tierList) {
-            if (card.ratio >= 1.8) {
+            if (card.performance?.general?.calibrated && card.baseline
+                && card.performance.general.indexInterval?.[0] / card.baseline >= 1.8) {
                 warnings.push({
                     type: 'OP', card,
-                    message: `${card.name} (T${card.tier}/${card.rarity}) — Baseline 대비 ${Math.round(card.ratio * 100)}%로 같은 티어 내 과도하게 강함`
+                    message: `${card.name} — 실측 기준 초안 대비 우세. 일반 덱 성능지수 ${card.performance.general.index.toFixed(2)} (추가 검토 필요)`
                 });
             }
-            if (card.ratio <= 0.4 && (card.totalUses || 0) > 5) {
+            if (card.performance?.general?.calibrated && card.baseline
+                && card.performance.general.indexInterval?.[1] / card.baseline <= 0.4) {
                 warnings.push({
                     type: 'UP', card,
-                    message: `${card.name} (T${card.tier}/${card.rarity}) — Baseline 대비 ${Math.round(card.ratio * 100)}%로 같은 티어 내 너무 약함`
+                    message: `${card.name} — 실측 기준 초안 대비 열세. 일반 덱 성능지수 ${card.performance.general.index.toFixed(2)} (추가 검토 필요)`
                 });
             }
         }
@@ -270,10 +310,12 @@ export class Simulator {
         for (const gen of history) {
             for (const [cardId, stats] of Object.entries(gen.cardStats || {})) {
                 const pack = stats.pack || 'unknown';
-                if (!packStats[pack]) packStats[pack] = { wins: 0, losses: 0, uses: 0 };
+                if (!packStats[pack]) packStats[pack] = { wins: 0, losses: 0, draws: 0, games: 0, uses: 0 };
                 packStats[pack].wins += stats.wins;
                 packStats[pack].losses += stats.losses;
                 packStats[pack].uses += stats.uses;
+                packStats[pack].games += stats.games;
+                packStats[pack].draws += stats.draws;
             }
         }
 
@@ -351,7 +393,8 @@ export class Simulator {
             synergies,
             antiSynergies,
             packCombos,
-            tierHeatmap
+            tierHeatmap,
+            performanceReport: this.performanceReport
         };
     }
 }

@@ -25,6 +25,8 @@ app.js → simulator.js → engine.js → effects.js → effects-bio-gamble.js
 | `js/engine.js` | 상태, 카드 사용, 피해, 덱/해체/재구축, 턴과 승패 |
 | `js/ai.js` | 덱 구성, 합법 카드 선택, 가중치/통계 |
 | `js/simulator.js` | 세대별 대전 실행, 결과 집계, 학습 |
+| `js/performance.js` | 실제 엔진 효과 측정, 시드 고정, 한 슬롯 교체 대조 실험 |
+| `js/performance-view.js` | 효과량/교체 기여/불확실성 표시 |
 | `js/app.js` | 설정과 결과 대시보드 |
 | `tests/*.test.mjs` | Node assert 기반 회귀 테스트 |
 
@@ -51,6 +53,8 @@ app.js → simulator.js → engine.js → effects.js → effects-bio-gamble.js
 턴 시작은 에너지/카운터 초기화, 상대 부식에 의한 실드 감소, 부족한 손패 드로우, 발버둥/랜섬웨어, 지연 효과, 오버클럭 감소, 코어 순서입니다. 턴 종료는 HP 대가, 임시 카드, 지연 효과, 코어, 약화 감소, 롤백 손패 복구를 처리합니다.
 
 ## 학습과 한계
+
+성능 평가 경로는 `PerformanceEvaluator`로 분리되어 있다. 평가 중 선택 정책과 덱을 고정하고, 후보/신속 타격/빈 슬롯을 같은 시드와 양쪽 선공으로 비교한다. `Simulator.performanceReport`가 결과를 보관하며 학습용 `cardWeights`와 섞지 않는다. 자세한 단위, 기준 초안, 저장 호환, 실행법은 [성능 측정 가이드](성능_측정_가이드.md)를 따른다.
 
 AI의 티어 Baseline/가중치, 덱 구성, 매치 조합, 랜덤 선공은 분석 정책입니다. Unity EnemyAI의 행동 순서를 재현하지 않습니다. 최대 30회 행동/200라운드의 기본 안전 한도가 있으며 최대 라운드 도달은 `winner: 'draw'`, `termination: 'turn_limit'`로 기록합니다. 무승부를 임의 승패로 학습하지 않습니다.
 

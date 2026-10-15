@@ -43,7 +43,7 @@ for (const [filename, content] of outputs) {
     let current;
     try { current = await readFile(filename, 'utf8'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (current === content) continue;
+    if (current?.replace(/\r\n/g, '\n') === content) continue;
     if (check) {
         console.error(`Out of date: ${path.relative(root, filename)}`);
         stale = true;

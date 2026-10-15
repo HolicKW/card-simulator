@@ -6,6 +6,8 @@
 
 import { Simulator } from './simulator.js';
 import { getAllCards, getAllPacks } from './cards.js';
+import { PILOT_CARDS } from './performance.js';
+import { performanceDetail, performanceReportHTML } from './performance-view.js';
 
 const TIER_COLORS = {
   S: '#F04452', A: '#FF8A00', B: '#FFB800',
@@ -63,6 +65,7 @@ class App {
     const tabBtns = document.querySelectorAll('.tab-btn');
 
     startBtn?.addEventListener('click', () => this._startSimulation());
+    document.getElementById('btn-evaluate')?.addEventListener('click', () => this._startEvaluation());
     stopBtn?.addEventListener('click', () => this._stopSimulation());
     exportBtn?.addEventListener('click', () => this._exportData());
     importBtn?.addEventListener('click', () => importFile?.click());
@@ -85,6 +88,7 @@ class App {
   async _startSimulation() {
     if (this.isRunning) return;
     this.isRunning = true;
+    this._setBusy(true);
 
     const startBtn = document.getElementById('btn-start');
     const stopBtn = document.getElementById('btn-stop');
@@ -125,23 +129,53 @@ class App {
       this._renderFinalResults();
     } catch (e) {
       console.error('시뮬레이션 에러:', e);
+      alert(e.message);
     }
 
     this.isRunning = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    startBtn.textContent = '시뮬레이션 시작';
+    startBtn.textContent = '학습 대전 시작';
+    this._setBusy(false);
     if (progressContainer) progressContainer.classList.remove('active');
   }
 
   _stopSimulation() {
     this.simulator.stop();
-    this.isRunning = false;
-    const startBtn = document.getElementById('btn-start');
-    const stopBtn = document.getElementById('btn-stop');
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    startBtn.textContent = '시뮬레이션 시작';
+    document.getElementById('btn-stop').disabled = true;
+  }
+
+  _setBusy(busy) {
+    for (const id of ['btn-start', 'btn-evaluate', 'btn-import', 'btn-export']) {
+      document.getElementById(id).disabled = busy;
+    }
+    document.getElementById('btn-stop').disabled = !busy;
+  }
+
+  async _startEvaluation() {
+    if (this.isRunning) return;
+    this.isRunning = true;
+    this._setBusy(true);
+    const progress = document.getElementById('progress-container');
+    progress.classList.add('active');
+    try {
+      const tier = Number(document.getElementById('tier-limit').value);
+      const packs = new Set(['base', ...Array.from(document.querySelectorAll('#pack-checkboxes input:checked')).map(input => input.value)]);
+      const all = document.getElementById('evaluation-scope').value === 'all';
+      const cardIds = getAllCards().filter(card => card.tier <= tier && packs.has(card.pack) && (all || PILOT_CARDS.includes(card.id))).map(card => card.id);
+      await this.simulator.runPerformance({ cardIds,
+        seeds: Number(document.getElementById('evaluation-seeds').value),
+        seed: Number(document.getElementById('evaluation-seed').value),
+        deckSize: Number(document.getElementById('deck-size').value)
+      }, value => this._updateProgress(value));
+      this._renderFinalResults();
+      document.querySelector('[data-tab="performance"]').click();
+    } catch (error) { console.error(error); alert(error.message); }
+    finally {
+      this.isRunning = false;
+      this._setBusy(false);
+      progress.classList.remove('active');
+    }
   }
 
   _updateProgress(p) {
@@ -149,7 +183,9 @@ class App {
     const progressText = document.getElementById('progress-text');
     const pct = Math.round((p.current / p.total) * 100);
     if (progressBar) progressBar.style.width = `${pct}%`;
-    if (progressText) progressText.textContent = `세대 ${p.gen} | 게임 ${p.game} | ${pct}%`;
+    if (progressText) progressText.textContent = p.cardId
+      ? `${this._cardInfo.get(p.cardId)?.name} · ${p.context === 'general' ? '일반 덱' : '팩 전용 덱'} · ${p.seeds}시드 · ${pct}%`
+      : `세대 ${p.gen} | 게임 ${p.game} | ${pct}%`;
   }
 
   _renderGenerationResult(genResult) {
@@ -166,12 +202,13 @@ class App {
     el.innerHTML = `
       <div class="gen-header">
         <span class="gen-num">세대 ${genResult.generation}</span>
-        <span class="gen-winrate ${winRate >= 50 ? 'positive' : 'negative'}">${winRate}% 승률</span>
+        <span class="gen-winrate ${winRate >= 50 ? 'positive' : 'negative'}">A측 ${winRate}% 승률</span>
       </div>
       <div class="gen-stats">
         <span>${genResult.totalGames}판</span>
         <span>승 ${genResult.playerWins}</span>
-        <span>패 ${genResult.totalGames - genResult.playerWins}</span>
+        <span>패 ${genResult.totalGames - genResult.playerWins - (genResult.draws || 0)}</span>
+        <span>무 ${genResult.draws || 0}</span>
       </div>
     `;
 
@@ -205,6 +242,7 @@ class App {
     this._renderSynergyAnalysis(analysis.synergies, analysis.antiSynergies);
     this._renderCrossPackAnalysis(analysis.packCombos);
     this._renderTierHeatmap(analysis.tierHeatmap);
+    document.getElementById('performance-results').innerHTML = performanceReportHTML(analysis.performanceReport);
     // 그래프 데이터를 저장 — 탭이 display:none이면 canvas 크기가 0이므로
     // 탭이 활성화될 때 렌더링하도록 지연
     this._pendingGraphData = analysis.history;
@@ -238,7 +276,7 @@ class App {
           ${cards.map(c => `
             <div class="tier-card ${c.rarity}" data-card="${c.id}" tabindex="0">
               <span class="card-name">${c.name}</span>
-              <span class="card-weight">T${c.tier} ${Math.round((c.ratio || 0) * 100)}%</span>
+              <span class="card-weight">T${c.tier} ${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</span>
             </div>
           `).join('')}
         </div>
@@ -297,10 +335,10 @@ class App {
     const pct = (v) => (v != null ? `${v}%` : '–');
     const matches = Object.entries(c.byTierMatch || {}).sort(([a], [b]) => a.localeCompare(b));
     const stats = [
-      ['플레이 승률', pct(c.winRate)],
+      ['카드 사용 전투', pct(c.playRate)],
       ['덱 승률', pct(c.deckWinRate)],
       ['게임당 사용', c.avgPlaysPerGame != null ? `${c.avgPlaysPerGame}회` : '–'],
-      ['AI 가중치', c.weight ?? '–'],
+      ['AI 선택 가중치', c.weight ?? '–'],
       ['덱 편입', `${c.deckInclusions || 0}회`],
       ['실사용', `${c.totalUses || 0}회`],
     ];
@@ -316,10 +354,11 @@ class App {
       </div>
       ${info?.description ? `<p class="pop-desc">${info.description}</p>` : ''}
       ${info?.keywords?.length ? `<div class="pop-keywords">${info.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('')}</div>` : ''}
-      <div class="pop-hero"><span>Baseline 대비</span><strong>${Math.round((c.ratio || 0) * 100)}%</strong></div>
+      <div class="pop-hero"><span>티어 기준 초안 대비</span><strong>${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</strong></div>
       <dl class="pop-stats">
         ${stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
       </dl>
+      ${performanceDetail(c.performance)}
       ${matches.length ? `
         <div class="pop-section">티어별 덱 승률</div>
         ${matches.map(([tm, d]) => `
@@ -336,7 +375,7 @@ class App {
     if (!container) return;
 
     if (warnings.length === 0) {
-      container.innerHTML = '<div class="no-warnings">심각한 밸런스 문제가 감지되지 않았습니다.</div>';
+      container.innerHTML = '<div class="no-warnings">확인된 측정값에서 표시할 경고가 없습니다. 미평가 카드는 성능 측정에서 확인해 주세요.</div>';
       return;
     }
 
@@ -355,7 +394,7 @@ class App {
     const packs = getAllPacks();
     container.innerHTML = Object.entries(packStats).map(([packId, stats]) => {
       const pack = packs.find(p => p.id === packId);
-      const winRate = stats.uses > 0 ? Math.round((stats.wins / stats.uses) * 100) : 0;
+      const winRate = stats.games > 0 ? Math.round((stats.wins / stats.games) * 100) : 0;
       return `
         <div class="pack-stat-card">
           <div class="pack-stat-name">${pack?.name || packId}</div>
@@ -549,11 +588,11 @@ class App {
       html += `<div class="heatmap-grid">`;
       for (const card of cards) {
         const pct = card.ratio != null ? Math.round(card.ratio * 100) : '?';
-        const bg = card.ratio != null ? getHeatColor(card.ratio) : '#D1D6DB';
+        const bg = card.ratio != null && card.valueTier !== '?' ? getHeatColor(card.ratio) : '#D1D6DB';
         html += `<div class="heatmap-cell" style="--heat:${bg}" data-card="${card.id}" tabindex="0">`;
         html += `<span class="hm-name">${card.name}</span>`;
         html += `<span class="hm-grade">${card.valueTier}</span>`;
-        html += `<span class="hm-pct">${pct}%</span>`;
+        html += `<span class="hm-pct">${card.ratio == null ? '미평가' : `${pct}%`}</span>`;
         html += `</div>`;
       }
       html += `</div></div>`;
@@ -775,14 +814,17 @@ class App {
   }
 
   _exportData() {
-    const data = this.simulator.ai.exportWeights();
+    const data = this.simulator.exportData();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `card-balance-gen${data.generation}.json`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    // Let the browser begin reading the blob before releasing its URL.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   _importData(e) {
@@ -793,8 +835,8 @@ class App {
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
-        this.simulator.ai.importWeights(data);
-        alert(`세대 ${data.generation}의 학습 데이터를 불러왔습니다.`);
+        this.simulator.importData(data);
+        alert(data.kind === 'performance-report' ? '성능 측정값을 불러왔습니다.' : `세대 ${data.generation}의 선택 가중치와 성능 측정값을 불러왔습니다.`);
         // 바로 결과 렌더링
         this._renderFinalResults();
       } catch (err) {

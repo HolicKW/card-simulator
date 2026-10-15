@@ -2,41 +2,21 @@
  * ai.js — 학습형 AI 에이전트
  * 
  * 카드 선택 가중치를 시뮬레이션 결과에 따라 자동 조정.
- * - 초기: 코스트 효율 + 티어 기대밸류 기반 휴리스틱
- * - 학습: 승패 기반 가중치 업데이트 (ELO 방식)
- * - 핵심: 고티어 카드는 "설계상 더 강해야 함"을 기본 전제로 인식
- *   → 티어별 Baseline을 두고, 같은 티어 내에서의 상대적 밸류를 학습
- *   → 교차 티어 비교는 "기대값 대비 초과/미달"로 판단
+ * 선택 가중치는 덱 구성과 행동 정책에만 사용한다.
+ * 실측 성능은 performance.js의 고정 정책 교체 실험에서 별도로 구한다.
  */
 
 import { getAllCards, getCardsByPack } from './cards.js';
 import { newWorldDataVersion } from './newworld-cards.js';
 
-export const LEARNING_RULESET_VERSION = 'newworld-2026-10-15';
+export const LEARNING_RULESET_VERSION = 'selection-battle-v2';
 
 /**
- * 티어별 기대 밸류 Baseline
- * 설계 의도: "고 티어 = 더 강한 카드가 나와야 정상"
- * 이 값 자체를 넘는 카드가 진짜 OP, 못 미치는 카드가 UP
+ * 학습을 시작할 때의 선택 우선도. T1을 1로 정규화한 기존 티어 비율이다.
+ * 실제 효과를 측정한 값이나 OP/UP 판정 기준으로 사용하지 않는다.
  */
-const TIER_BASELINES = {
-    1: 0.9,   // T1: 기초 카드
-    2: 1.5,   // T2: 시너지 시작
-    3: 2.1,   // T3: 본격 피니셔급
-    4: 2.8,   // T4: 상위 카드
-    5: 3.5,   // T5: 끝판왕
-};
-
-/**
- * 희귀도별 기대 밸류 보정
- */
-const RARITY_MULTIPLIER = {
-    common: 0.9,
-    rare: 0.95,
-    epic: 1.0,
-    unique: 1.1,
-    legendary: 1.25,
-};
+// Selection priors only; measured performance is stored separately.
+const SELECTION_PRIORS = { 1: 1, 2: 1.6667, 3: 2.3333, 4: 3.1111, 5: 3.8889 };
 
 /**
  * 티어 매치별 학습 가중치
@@ -62,20 +42,10 @@ export class CardAI {
     }
 
     /**
-     * 초기 가중치: 티어 Baseline × 희귀도 보정
-     * 고티어 카드는 태생적으로 높은 초기 가중치를 가짐 → 정상
-     * 학습은 이 Baseline으로부터의 편차를 조정
+     * 비용은 행동 선택에서 반영한다. 희귀도 자체는 성능 보너스로 쓰지 않는다.
      */
     _initWeights() {
-        const cards = getAllCards();
-        for (const card of cards) {
-            const tierBase = TIER_BASELINES[card.tier] || 1.0;
-            const rarityMul = RARITY_MULTIPLIER[card.rarity] || 1.0;
-            // 코스트 효율 보정: 저코스트일수록 약간 가산 (유연성 가치)
-            const costEfficiency = 1 + (3 - Math.min(card.cost, 3)) * 0.05;
-            const base = tierBase * rarityMul * costEfficiency;
-            this.cardWeights.set(card.id, Math.round(base * 100) / 100);
-        }
+        for (const card of getAllCards()) this.cardWeights.set(card.id, SELECTION_PRIORS[card.tier]);
     }
 
     /**
@@ -158,7 +128,7 @@ export class CardAI {
             }
 
             const w = this.cardWeights.get(card.id) || 1;
-            const baseline = TIER_BASELINES[card.tier] || 1;
+            const baseline = SELECTION_PRIORS[card.tier] || 1;
             const deviation = (w - baseline) / baseline;
             const prob = 1 / (1 + Math.exp(-deviation * 3));
             const adoptProb = Math.max(0.15, Math.min(0.98, prob));
@@ -274,30 +244,19 @@ export class CardAI {
 
     /**
      * 학습 업데이트: 배틀 결과에 따라 가중치 조정
-     * 핵심: "그 카드의 티어 Baseline 대비" 얼마나 기여했느냐로 조정
+     * 덱 편입 또는 사용 카드마다 전투당 한 번만 보상한다.
      * tierLevel: 매치 티어 (1~5) — 고티어일수록 업데이트 폭 증가
      */
     updateWeights(result, outcome, tierLevel = 3) {
-        const tierMul = TIER_MATCH_WEIGHTS[tierLevel] || 1.0;
-        const baseFactor = (outcome === 'win' ? 0.05 : -0.05) * tierMul;
-
-        for (const log of result.cardUsageLog) {
-            if (!this.canonicalCardIds.has(log.cardId)) continue;
-            const current = this.cardWeights.get(log.cardId) || 1;
-            const baseline = TIER_BASELINES[this._getCardTier(log.cardId)] || 1;
-
-            let factor = baseFactor;
-            // Baseline의 50% 아래면 하락 완화 (극단적 급락 방지)
-            if (current < baseline * 0.5 && factor < 0) {
-                factor *= 0.4;
-            }
-            // Baseline 위에서 증가는 둔화 (천장 효과)
-            if (current > baseline * 1.5 && factor > 0) {
-                factor *= 0.5;
-            }
-
-            const newWeight = Math.max(0.15, current + factor * this.learningRate);
-            this.cardWeights.set(log.cardId, Math.round(newWeight * 100) / 100);
+        if (outcome !== 'win' && outcome !== 'lose') return;
+        const ids = new Set([...(result.deck || []).map(c => c.id), ...result.cardUsageLog.map(log => log.cardId)]);
+        for (const id of ids) {
+            if (!this.canonicalCardIds.has(id)) continue;
+            const current = this.cardWeights.get(id), baseline = SELECTION_PRIORS[this._getCardTier(id)];
+            let factor = (outcome === 'win' ? 0.05 : -0.05) * (TIER_MATCH_WEIGHTS[tierLevel] || 1);
+            if (current < baseline * 0.5 && factor < 0) factor *= 0.4;
+            if (current > baseline * 1.5 && factor > 0) factor *= 0.5;
+            this.cardWeights.set(id, Math.round(Math.max(0.15, current + factor * this.learningRate) * 10000) / 10000);
         }
     }
 
@@ -307,238 +266,74 @@ export class CardAI {
         return card?.tier || 1;
     }
 
-    /** 티어 매치 레이블 → 티어 숫자 변환 ('T1 미러'→1, 'T1-3 미러'→3) */
-    _tierFromLabel(label) {
-        if (!label) return 3;
-        if (label === 'T1 미러') return 1;
-        const m = label.match(/T1-(\d)/);
-        return m ? parseInt(m[1]) : 3;
-    }
-
     /**
-     * 세대 종료: 전체 시뮬레이션 결과 기반으로 가중치 정규화
+     * 세대 종료: 편입 전투와 사용 횟수를 분리해 집계한다.
      */
     endGeneration(results) {
         this.generation++;
-
-        // 카드별 승률 계산 (고티어 매치일수록 가중치 높게 집계)
         const cardStats = new Map();
-        for (const r of results) {
-            const tierLevel = this._tierFromLabel(r.enemy);
-            const tierW = TIER_MATCH_WEIGHTS[tierLevel] || 1.0;
-            for (const log of r.result.cardUsageLog) {
-                // 특수/생성 카드와 상세 로그는 일반 카드 학습에 포함하지 않는다.
-                if (!this.canonicalCardIds.has(log.cardId)) continue;
-                if (!cardStats.has(log.cardId)) {
-                    cardStats.set(log.cardId, { wins: 0, losses: 0, uses: 0, weightedUses: 0, weightedWins: 0, name: log.cardName, pack: log.pack, rarity: log.rarity });
-                }
-                const stats = cardStats.get(log.cardId);
-                stats.uses++;
-                stats.weightedUses += tierW;
-                if (r.result.winner === 'player') { stats.wins++; stats.weightedWins += tierW; }
-                else stats.losses++;
+        for (const record of results) {
+            const played = new Map();
+            for (const log of record.result.cardUsageLog) {
+                if (this.canonicalCardIds.has(log.cardId)) played.set(log.cardId, (played.get(log.cardId) || 0) + 1);
+            }
+            const ids = new Set([...(record.deck || []).map(c => c.id), ...played.keys()]);
+            const won = record.result.winner === 'player', drawn = record.result.winner === 'draw';
+            for (const id of ids) {
+                if (!this.canonicalCardIds.has(id)) continue;
+                const card = getAllCards().find(c => c.id === id);
+                if (!cardStats.has(id)) cardStats.set(id, { wins: 0, losses: 0, draws: 0, games: 0,
+                    uses: 0, playedGames: 0, name: card.name, pack: card.pack, rarity: card.rarity, byTierMatch: {} });
+                const st = cardStats.get(id);
+                st.games++; st.wins += Number(won); st.draws += Number(drawn); st.losses += Number(!won && !drawn);
+                st.uses += played.get(id) || 0; st.playedGames += Number(played.has(id));
+                const tm = st.byTierMatch[record.enemy || 'unknown'] ||= { inclusions: 0, wins: 0, losses: 0, draws: 0 };
+                tm.inclusions++; tm.wins += Number(won); tm.draws += Number(drawn); tm.losses += Number(!won && !drawn);
             }
         }
-
-        // ─── 덱 편입 및 티어별 성능 추적 (기능 #2, #7) ───
-        const deckStats = new Map();
-        for (const r of results) {
-            const tierMatch = r.enemy; // 'T1 미러', 'T1-2 미러', etc.
-            const isWin = r.result.winner === 'player';
-            const uniqueIds = [...new Set(r.deck.map(c => c.id))];
-            for (const cardId of uniqueIds) {
-                if (!this.canonicalCardIds.has(cardId)) continue;
-                if (!deckStats.has(cardId)) {
-                    deckStats.set(cardId, { inclusions: 0, wins: 0, losses: 0, byTierMatch: {} });
-                }
-                const ds = deckStats.get(cardId);
-                ds.inclusions++;
-                if (isWin) ds.wins++; else ds.losses++;
-                if (!ds.byTierMatch[tierMatch]) {
-                    ds.byTierMatch[tierMatch] = { inclusions: 0, wins: 0, losses: 0 };
-                }
-                const tm = ds.byTierMatch[tierMatch];
-                tm.inclusions++;
-                if (isWin) tm.wins++; else tm.losses++;
+        for (const [id, st] of cardStats) {
+            const cum = this.cumulativeStats.get(id) || { wins: 0, losses: 0, draws: 0, uses: 0, playedGames: 0,
+                name: st.name, pack: st.pack, rarity: st.rarity, deckInclusions: 0, deckWins: 0,
+                deckLosses: 0, deckDraws: 0, byTierMatch: {} };
+            for (const key of ['wins', 'losses', 'draws', 'uses', 'playedGames']) cum[key] = (cum[key] || 0) + st[key];
+            cum.deckInclusions += st.games; cum.deckWins += st.wins; cum.deckLosses += st.losses; cum.deckDraws += st.draws;
+            for (const [label, tm] of Object.entries(st.byTierMatch)) {
+                const total = cum.byTierMatch[label] ||= { inclusions: 0, wins: 0, losses: 0, draws: 0 };
+                for (const key of Object.keys(tm)) total[key] = (total[key] || 0) + tm[key];
             }
+            this.cumulativeStats.set(id, cum);
         }
-
-        // ─── 티어 인식 ELO 업데이트 ───
-        // 핵심: 같은 티어 내에서의 상대 순위로 조정
-        // "T1 커먼이 승률 80%면 그건 OP, T5 레전이 승률 80%면 그건 정상"
-        const tierGroups = {};
-        for (const [cardId, stats] of cardStats) {
-            const tier = this._getCardTier(cardId);
-            if (!tierGroups[tier]) tierGroups[tier] = [];
-            tierGroups[tier].push({ cardId, stats, winRate: stats.uses > 0 ? stats.wins / stats.uses : 0.5 });
-        }
-
-        for (const [tier, cards] of Object.entries(tierGroups)) {
-            const baseline = TIER_BASELINES[tier] || 1;
-            // 같은 티어 내에서의 평균 승률 계산 (가중치 반영)
-            const avgWinRate = cards.reduce((sum, c) => sum + c.winRate, 0) / cards.length;
-
-            for (const { cardId, stats } of cards) {
-                // 고티어 매치 결과를 더 반영한 가중 승률 사용
-                const winRate = stats.weightedUses > 0
-                    ? stats.weightedWins / stats.weightedUses
-                    : 0.5;
-                const current = this.cardWeights.get(cardId) || baseline;
-
-                // 티어 내 상대 편차: 같은 티어 평균 승률 대비 얼마나 좋은지/나쁜지
-                const relativePerformance = winRate - avgWinRate;
-
-                // 전체 게임 대비 사용 빈도 (많이 사용될수록 데이터 신뢰도 높음)
-                const confidence = Math.min(1, stats.uses / (results.length * 0.3));
-
-                // 조정량: 상대 편차 × 학습률 × 신뢰도 (증폭)
-                const adjustment = relativePerformance * this.learningRate * confidence * 1.5;
-
-                const newWeight = Math.max(
-                    baseline * 0.2, // 최소값: Baseline의 20%
-                    current + adjustment
-                );
-                this.cardWeights.set(cardId, Math.round(newWeight * 100) / 100);
-            }
-        }
-
-        // 학습률 감쇠 (완화: 더 오래 학습)
         this.learningRate = Math.max(0.05, this.learningRate * 0.97);
-
-        // 누적 통계 업데이트 (플레이 횟수)
-        for (const [cardId, stats] of cardStats) {
-            if (!this.cumulativeStats.has(cardId)) {
-                this.cumulativeStats.set(cardId, {
-                    wins: 0, losses: 0, uses: 0,
-                    name: stats.name, pack: stats.pack, rarity: stats.rarity,
-                    deckInclusions: 0, deckWins: 0, deckLosses: 0,
-                    byTierMatch: {}
-                });
-            }
-            const cum = this.cumulativeStats.get(cardId);
-            cum.wins += stats.wins;
-            cum.losses += stats.losses;
-            cum.uses += stats.uses;
-        }
-
-        // 누적 통계 업데이트 (덱 편입 + 티어별 성능)
-        for (const [cardId, ds] of deckStats) {
-            if (!this.cumulativeStats.has(cardId)) {
-                const cardInfo = getAllCards().find(c => c.id === cardId);
-                this.cumulativeStats.set(cardId, {
-                    wins: 0, losses: 0, uses: 0,
-                    name: cardInfo?.name || cardId,
-                    pack: cardInfo?.pack || 'unknown',
-                    rarity: cardInfo?.rarity || 'common',
-                    deckInclusions: 0, deckWins: 0, deckLosses: 0,
-                    byTierMatch: {}
-                });
-            }
-            const cum = this.cumulativeStats.get(cardId);
-            cum.deckInclusions = (cum.deckInclusions || 0) + ds.inclusions;
-            cum.deckWins = (cum.deckWins || 0) + ds.wins;
-            cum.deckLosses = (cum.deckLosses || 0) + ds.losses;
-            if (!cum.byTierMatch) cum.byTierMatch = {};
-            for (const [tm, tmData] of Object.entries(ds.byTierMatch)) {
-                if (!cum.byTierMatch[tm]) {
-                    cum.byTierMatch[tm] = { inclusions: 0, wins: 0, losses: 0 };
-                }
-                cum.byTierMatch[tm].inclusions += tmData.inclusions;
-                cum.byTierMatch[tm].wins += tmData.wins;
-                cum.byTierMatch[tm].losses += tmData.losses;
-            }
-        }
-
-        // 이력 저장
-        this.history.push({
-            generation: this.generation,
-            weights: Object.fromEntries(this.cardWeights),
-            cardStats: Object.fromEntries(cardStats),
-            totalGames: results.length,
-            playerWins: results.filter(r => r.result.winner === 'player').length,
-            learningRate: Math.round(this.learningRate * 1000) / 1000
-        });
-
-        return this.history[this.history.length - 1];
+        const battles = results.filter(r => !r.side || r.side === 'A');
+        const summary = { generation: this.generation, weights: Object.fromEntries(this.cardWeights), cardStats: Object.fromEntries(cardStats),
+            totalGames: battles.length, perspectiveGames: results.length,
+            playerWins: battles.filter(r => r.result.winner === 'player').length,
+            draws: battles.filter(r => r.result.winner === 'draw').length, learningRate: Math.round(this.learningRate * 1000) / 1000 };
+        this.history.push(summary);
+        return summary;
     }
 
     /**
-     * 현재 카드 밸류 티어 리스트 반환
-     * 핵심: "기대 Baseline 대비 초과/미달"로 평가
+     * 선택 통계를 반환한다. 실측 성능 등급은 Simulator가 별도로 병합한다.
      */
     getCardTierList() {
-        const cards = getAllCards();
-        const tierList = cards.map(card => {
-            const w = this.cardWeights.get(card.id) || 1;
-            const baseline = TIER_BASELINES[card.tier] || 1;
-            // Baseline 대비 비율로 밸류 등급 판정
-            const ratio = w / baseline;
-
-            // 누적 통계 병합
-            const cumStats = this.cumulativeStats.get(card.id);
-            const totalUses = cumStats?.uses || 0;
-            const winRate = totalUses > 0 ? Math.round((cumStats.wins / totalUses) * 100) : null;
-
-            // 덱 편입 통계 (#2)
-            const deckInclusions = cumStats?.deckInclusions || 0;
-            const deckWins = cumStats?.deckWins || 0;
-            const deckWinRate = deckInclusions > 0 ? Math.round((deckWins / deckInclusions) * 100) : null;
-            const playRate = deckInclusions > 0 ? Math.round((totalUses / deckInclusions) * 100) : null;
-            const avgPlaysPerGame = deckInclusions > 0 ? Math.round((totalUses / deckInclusions) * 100) / 100 : null;
-
-            // 티어별 성능 (#7)
-            const byTierMatch = {};
-            if (cumStats?.byTierMatch) {
-                for (const [tm, data] of Object.entries(cumStats.byTierMatch)) {
-                    byTierMatch[tm] = {
-                        inclusions: data.inclusions,
-                        wins: data.wins,
-                        losses: data.losses,
-                        winRate: data.inclusions > 0 ? Math.round((data.wins / data.inclusions) * 100) : null
-                    };
-                }
-            }
-
-            // 사용 데이터 없으면 미평가
-            let valueTier;
-            if (totalUses === 0) {
-                valueTier = '?';
-            } else if (ratio >= 1.5) valueTier = 'S';
-            else if (ratio >= 1.2) valueTier = 'A';
-            else if (ratio >= 0.9) valueTier = 'B';
-            else if (ratio >= 0.65) valueTier = 'C';
-            else if (ratio >= 0.45) valueTier = 'D';
-            else valueTier = 'F';
-
-            return {
-                id: card.id,
-                name: card.name,
-                pack: card.pack,
-                type: card.type,
-                rarity: card.rarity,
-                cost: card.cost,
-                tier: card.tier,
-                weight: Math.round(w * 100) / 100,
-                baseline: baseline,
-                ratio: Math.round(ratio * 100) / 100,
-                valueTier,
-                totalUses,
-                winRate,
-                // 신규 지표 (#2, #7)
-                deckInclusions,
-                deckWinRate,
-                playRate,
-                avgPlaysPerGame,
-                byTierMatch
-            };
+        return getAllCards().map(card => {
+            const st = this.cumulativeStats.get(card.id), games = st?.deckInclusions || 0, uses = st?.uses || 0;
+            return { id: card.id, name: card.name, pack: card.pack, type: card.type, rarity: card.rarity, cost: card.cost, tier: card.tier,
+                weight: Math.round(this.cardWeights.get(card.id) * 10000) / 10000, selectionBaseline: SELECTION_PRIORS[card.tier],
+                baseline: null, ratio: null, valueTier: '?', totalUses: uses,
+                winRate: games ? Math.round(st.wins / games * 100) : null,
+                deckInclusions: games, deckWinRate: games ? Math.round(st.deckWins / games * 100) : null,
+                playRate: games ? Math.round(st.playedGames / games * 100) : null,
+                avgPlaysPerGame: games ? Math.round(uses / games * 100) / 100 : null,
+                byTierMatch: Object.fromEntries(Object.entries(st?.byTierMatch || {}).map(([label, tm]) =>
+                    [label, { ...tm, winRate: tm.inclusions ? Math.round(tm.wins / tm.inclusions * 100) : null }])) };
         });
-
-        return tierList.sort((a, b) => b.ratio - a.ratio);
     }
 
     exportWeights() {
         return {
-            schemaVersion: 2,
+            schemaVersion: 3,
             rulesetVersion: LEARNING_RULESET_VERSION,
             dataVersion: newWorldDataVersion,
             generation: this.generation,
@@ -550,14 +345,43 @@ export class CardAI {
     }
 
     importWeights(data) {
-        if (data?.schemaVersion !== 2 || data.rulesetVersion !== LEARNING_RULESET_VERSION
+        if (data?.schemaVersion !== 3 || data.rulesetVersion !== LEARNING_RULESET_VERSION
             || data.dataVersion !== newWorldDataVersion) {
             throw new Error('현재 NewWorld 전투 규칙/카드 데이터와 다른 학습 파일입니다. 기존 파일은 보관하고 새로 학습해 주세요.');
         }
-        this.generation = data.generation || 0;
-        this.cardWeights = new Map(Object.entries(data.weights || {}));
-        this.cumulativeStats = new Map(Object.entries(data.cumulativeStats || {}));
-        this.learningRate = data.learningRate || 0.15;
-        this.history = data.history || [];
+        const weights = Object.entries(data.weights || {});
+        if (!Number.isInteger(data.generation) || data.generation < 0 || !Number.isFinite(data.learningRate)
+            || data.learningRate <= 0 || data.learningRate > 1 || !Array.isArray(data.history)
+            || weights.length !== this.canonicalCardIds.size || weights.some(([id, weight]) =>
+                !this.canonicalCardIds.has(id) || !Number.isFinite(weight) || weight <= 0 || weight > 1e6)
+            || !data.cumulativeStats || typeof data.cumulativeStats !== 'object') throw new Error('유효하지 않은 NewWorld 선택 가중치 파일입니다.');
+        const stats = Object.entries(data.cumulativeStats);
+        if (stats.some(([id, value]) => !this.canonicalCardIds.has(id) || !value ||
+            ['wins', 'losses', 'draws', 'uses', 'playedGames', 'deckInclusions', 'deckWins', 'deckLosses', 'deckDraws'].some(key =>
+                !Number.isSafeInteger(value[key]) || value[key] < 0))) throw new Error('유효하지 않은 NewWorld 전투 통계입니다.');
+        const count = value => Number.isInteger(value) && value >= 0;
+        const metadata = id => {
+            const card = getAllCards().find(card => card.id === id);
+            return { name: card.name, pack: card.pack, rarity: card.rarity };
+        };
+        const validMatches = matches => matches && typeof matches === 'object' && !Array.isArray(matches)
+            && Object.entries(matches).every(([label, match]) => (/^T1(?:-[2-5])? 미러$/.test(label) || label === 'unknown')
+                && match && ['inclusions', 'wins', 'losses', 'draws'].every(key => count(match[key]))
+                && match.wins + match.losses + match.draws === match.inclusions);
+        if (stats.some(([, value]) => !validMatches(value.byTierMatch)
+            || value.wins + value.losses + value.draws !== value.deckInclusions
+            || value.playedGames > value.deckInclusions || value.uses < value.playedGames)
+            || data.history.length > 10000 || data.history.some(entry => !entry || !count(entry.generation)
+                || !count(entry.totalGames) || !count(entry.playerWins) || !count(entry.draws)
+                || entry.playerWins + entry.draws > entry.totalGames || !entry.cardStats
+                || Object.entries(entry.cardStats).some(([id, value]) => !this.canonicalCardIds.has(id) || !value
+                    || ['wins', 'losses', 'draws', 'games', 'uses', 'playedGames'].some(key => !count(value[key]))
+                    || !validMatches(value.byTierMatch)))) throw new Error('유효하지 않은 NewWorld 전투 이력입니다.');
+        this.generation = data.generation;
+        this.cardWeights = new Map(weights);
+        this.cumulativeStats = new Map(stats.map(([id, value]) => [id, { ...value, ...metadata(id) }]));
+        this.learningRate = data.learningRate;
+        this.history = data.history.map(entry => ({ ...entry, cardStats: Object.fromEntries(
+            Object.entries(entry.cardStats).map(([id, value]) => [id, { ...value, ...metadata(id) }])) }));
     }
 }
