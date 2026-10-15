@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import { CardAI } from '../js/ai.js';
 import { Simulator } from '../js/simulator.js';
 import { getAllCards } from '../js/cards.js';
-import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, PerformanceEvaluator } from '../js/performance.js';
+import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, calibrateTiers, PerformanceEvaluator } from '../js/performance.js';
 import { performanceReportHTML } from '../js/performance-view.js';
 import { card } from './helpers.mjs';
 
 const ordinary = { cardId: 'DM_007', cardName: '임시 땜빵', pack: 'dismantle', rarity: 'common' };
 const record = (winner, logs = [ordinary], side) => ({ side, enemy: 'T1 미러',
     deck: [card('DM_007'), card('BASE_001')], result: { winner, cardUsageLog: logs } });
+// 빈 슬롯 대비 승점 변화가 시드마다 values를 순환하는 일반 덱 측정 결과
+const gain = (...values) => ({ general: summarizeTrials(Array.from({ length: 200 }, (_, index) => ({ seed: index,
+    candidate: values[index % values.length], reference: 0, empty: 0, played: 1, uses: 1, draws: 0, selfDefeats: 0 }))) });
 
 export const tests = [
     ['seed scopes reproduce effects and restore global randomness even after an exception', () => {
@@ -66,22 +69,42 @@ export const tests = [
         assert.equal(summary.matches, 12); assert.equal(summary.seeds, 2);
         assert.equal(summary.calibrated, false);
     }],
-    ['noisy or zero reference contribution cannot produce a confirmed performance multiplier', () => {
+    ['sample size, not the reference card, decides whether a measurement counts', () => {
         const flat = { seed: 1, candidate: 1, reference: 0.5, empty: 0.5, played: 1, uses: 1, draws: 0, selfDefeats: 0 };
-        assert.equal(summarizeTrials(Array.from({ length: 200 }, () => flat)).index, null);
-        const confirmed = summarizeTrials(Array.from({ length: 200 }, () => ({ ...flat, reference: 1, empty: 0 })));
-        assert.equal(confirmed.index, 1); assert.equal(confirmed.calibrated, true);
+        assert.equal(summarizeTrials(Array.from({ length: 199 }, () => flat)).calibrated, false);
+        // 기준 카드(신속 타격)가 전혀 기여하지 않아도 카드 자체의 승점 변화는 확정된다
+        const enough = summarizeTrials(Array.from({ length: 200 }, () => flat));
+        assert.equal(enough.calibrated, true); assert.equal(enough.benefit.mean, 0.5);
+        const harmful = summarizeTrials(Array.from({ length: 200 }, () => ({ ...flat, candidate: 0 })));
+        assert.equal(harmful.benefit.mean, -0.5); assert.equal(harmful.calibrated, true);
     }],
-    ['negative contributions are retained and uncertain grade boundaries stay unrated', () => {
-        const trial = { seed: 1, candidate: 0, reference: 1, empty: 0.5, played: 1, uses: 1, draws: 0, selfDefeats: 0 };
-        const harmful = summarizeTrials(Array.from({ length: 200 }, () => trial));
-        assert.equal(harmful.index, -1); assert.equal(harmful.calibrated, true);
+    ['tier targets are the median gain of at least three measured cards in the same tier', () => {
+        assert.deepEqual(calibrateTiers({ BASE_001: gain(0.2), BASE_002: gain(0.4), BASE_005: gain(0.1), BASE_018: gain(0.3) }), { 1: 0.2 });
+        assert.deepEqual(calibrateTiers({ BASE_001: gain(-0.1), BASE_002: gain(0), BASE_005: gain(0) }), {});
+        const few = { BASE_001: { general: summarizeTrials([gain(0.2).general.trials[0]]) }, BASE_002: gain(0.4), BASE_005: gain(0.1) };
+        assert.deepEqual(calibrateTiers(few), {});
+    }],
+    ['learning gives provisional grades and conclusive measurements override them', () => {
         const sim = new Simulator();
-        const uncertain = summarizeTrials(Array.from({ length: 200 }, (_, index) => ({ ...trial,
-            candidate: index % 2 ? 1 : 0.5, reference: 0.5, empty: 0 })));
-        sim.performanceReport = { tierTargets: { 1: 1 }, cards: { BASE_001: { general: uncertain } } };
-        assert.equal(sim.getAnalysis().tierList.find(card => card.id === 'BASE_001').valueTier, '?');
+        sim.ai.endGeneration([record('player', [ordinary], 'A')]);
+        sim.ai.cardWeights.set('DM_007', 0.5);
+        const graded = () => sim.getAnalysis().tierList.find(next => next.id === 'DM_007');
+        assert.equal(graded().valueTier, 'D'); assert.equal(graded().gradeSource, 'provisional');
+        assert.equal(sim.getAnalysis().tierList.find(next => next.id === 'BASE_040').valueTier, '?');
+        sim.performanceReport = { tierTargets: { 1: 0.2 }, cards: { DM_007: gain(0.4) } };
+        assert.equal(graded().valueTier, 'S'); assert.equal(graded().gradeSource, 'measured'); assert.equal(graded().ratio, 2);
+        assert.ok(sim.getAnalysis().warnings.some(warning => warning.type === 'OP' && warning.card.id === 'DM_007'));
+        // 평균은 A/B 경계(1.2)에 있어 구간이 두 등급에 걸치므로 잠정 등급을 유지한다
+        sim.performanceReport = { tierTargets: { 1: 0.2 }, cards: { DM_007: gain(0.14, 0.34) } };
+        assert.equal(graded().valueTier, 'D'); assert.equal(graded().gradeSource, 'provisional');
         assert.equal(sim.getAnalysis().warnings.length, 0);
+    }],
+    ['measurement table shows confirmed cards relative to their tier baseline', () => {
+        const report = { status: 'complete', config: { cardIds: ['BASE_002'], deckSize: 20, seed: 1 }, tierTargets: { 1: 0.2 },
+            cards: { BASE_002: { probes: measureCard('BASE_002', 1), ...gain(0.3), dedicated: gain(0.1).general } } };
+        const html = performanceReportHTML(report);
+        assert.match(html, />1\.50</);   // 0.3 ÷ 0.2, 표의 소수 둘째 자리 표기
+        assert.doesNotMatch(html, /NaN|undefined|Infinity|미확정/);
     }],
     ['one battle credits a rebuild card once while retaining all plays and unused deck inclusions', () => {
         const once = new CardAI(), repeated = new CardAI();

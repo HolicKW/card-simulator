@@ -277,6 +277,7 @@ class App {
             <div class="tier-card ${c.rarity}" data-card="${c.id}" tabindex="0">
               <span class="card-name">${c.name}</span>
               <span class="card-weight">T${c.tier} ${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</span>
+              ${c.gradeSource === 'measured' ? '<span class="measured-badge">실측</span>' : ''}
             </div>
           `).join('')}
         </div>
@@ -354,7 +355,7 @@ class App {
       </div>
       ${info?.description ? `<p class="pop-desc">${info.description}</p>` : ''}
       ${info?.keywords?.length ? `<div class="pop-keywords">${info.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('')}</div>` : ''}
-      <div class="pop-hero"><span>티어 기준 초안 대비</span><strong>${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</strong></div>
+      <div class="pop-hero"><span>${c.gradeSource === 'measured' ? '실측 · 티어 중앙값 대비' : c.gradeSource === 'provisional' ? '잠정 · 학습 대전 기준' : '미평가'}</span><strong>${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</strong></div>
       <dl class="pop-stats">
         ${stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
       </dl>

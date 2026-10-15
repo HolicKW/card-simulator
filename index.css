@@ -739,6 +739,15 @@ button {
   background: color-mix(in srgb, var(--c) 18%, var(--surface));
 }
 
+.measured-badge {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--blue-weak);
+  color: var(--blue-strong);
+}
+
 .tier-card .card-weight {
   font-size: 11px;
   font-weight: 500;

@@ -13,6 +13,8 @@ const ENVIRONMENTS = { 1: [60, 3], 2: [115, 3], 3: [190, 3], 4: [295, 4], 5: [37
 const EMPTY = { id: 'EVAL_EMPTY', name: '빈 슬롯', type: 'skill', pack: 'evaluation',
     rarity: 'common', tier: 1, cost: 0, effects: [], keywords: [] };
 const SCENARIOS = ['basic', 'developed', 'prepared'];
+const MIN_TRIALS = 200;      // 카드 한 장의 측정을 확정하는 최소 시드 수
+const MIN_TIER_CARDS = 3;    // 티어 기준(중앙값)을 만드는 최소 확정 카드 수
 const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
 const round = value => Math.round(value * 10000) / 10000;
 
@@ -307,15 +309,9 @@ export function pairedTrial(cardId, context, seed, { deckSize = 20, maxTurns = 2
 export function summarizeTrials(trials) {
     const delta = interval(trials.map(trial => trial.candidate - trial.reference));
     const benefit = interval(trials.map(trial => trial.candidate - trial.empty));
-    const anchor = interval(trials.map(trial => trial.reference - trial.empty));
-    const index = anchor.mean > 0 ? benefit.mean / anchor.mean : null;
-    const residual = index === null ? null : interval(trials.map(trial =>
-        (trial.candidate - trial.empty) - index * (trial.reference - trial.empty)));
-    const calibrated = trials.length >= 200 && anchor.low > 0 && index !== null;
-    return { seeds: trials.length, matches: trials.length * 6, delta, benefit, anchor,
-        index: index === null ? null : round(index), calibrated,
-        indexInterval: index === null || residual.low === null ? null :
-            [round(index + residual.low / anchor.mean), round(index + residual.high / anchor.mean)],
+    // 표본 수만으로 확정한다. 정규화는 기준 카드 한 장이 아니라 티어 중앙값(calibrateTiers)으로 한다.
+    const calibrated = trials.length >= MIN_TRIALS;
+    return { seeds: trials.length, matches: trials.length * 6, delta, benefit, calibrated,
         playedRate: mean(trials.map(trial => trial.played / 2)),
         avgUses: mean(trials.map(trial => trial.uses / 2)),
         drawRate: mean(trials.map(trial => trial.draws / 2)),
@@ -324,17 +320,27 @@ export function summarizeTrials(trials) {
         trials };
 }
 
+// 티어 기준 = 같은 티어에서 확정된 카드(MIN_TIER_CARDS장 이상)의 빈 슬롯 대비 승점 변화 중앙값
 export function calibrateTiers(cards) {
-    const targets = { 1: 1 };
-    for (const tier of [2, 3, 4, 5]) {
+    const targets = {};
+    for (const tier of [1, 2, 3, 4, 5]) {
         const values = Object.entries(cards).filter(([id, result]) => getCardById(id).tier === tier && result.general?.calibrated)
-            .map(([, result]) => result.general.index).filter(Number.isFinite).sort((a, b) => a - b);
-        if (values.length >= 3) {
+            .map(([, result]) => result.general.benefit.mean).filter(Number.isFinite).sort((a, b) => a - b);
+        if (values.length >= MIN_TIER_CARDS) {
             const median = round((values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2);
             if (median > 0) targets[tier] = median;
         }
     }
     return targets;
+}
+
+// 티어 기준 대비 비율과 95% 구간. 확정 전이거나 티어 기준이 없으면 null.
+// ponytail: 중앙값은 여러 카드에서 나와 흔들림이 작다고 보고 고정값으로 나눔. 구간이 너무 좁아 보이면 부트스트랩으로 중앙값 오차까지 반영.
+export function tierRatio(general, target) {
+    if (!general?.calibrated || !(target > 0)) return null;
+    const { mean: average, low, high } = general.benefit;
+    return { ratio: round(average / target),
+        low: low === null ? null : round(low / target), high: high === null ? null : round(high / target) };
 }
 
 export class PerformanceEvaluator {
@@ -351,7 +357,7 @@ export class PerformanceEvaluator {
         this.running = true;
         const report = { evaluationVersion: EVALUATION_VERSION, policyVersion: POLICY_VERSION, dataVersion: newWorldDataVersion,
             config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns }, status: 'running',
-            referenceCard: 'BASE_001', environments: ENVIRONMENTS, cards: {}, tierTargets: { 1: 1 }, targetSource: 'measured-median-draft' };
+            referenceCard: 'BASE_001', environments: ENVIRONMENTS, cards: {}, tierTargets: {}, targetSource: 'tier-median-benefit' };
         let current = 0;
         try {
             for (const id of ids) {

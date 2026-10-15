@@ -1,4 +1,5 @@
 import { getCardById } from './cards.js';
+import { tierRatio } from './performance.js';
 
 const num = value => Number.isFinite(value) ? value.toFixed(2).replace(/\.00$/, '') : '–';
 const signed = value => Number.isFinite(value) ? `${value > 0 ? '+' : ''}${num(value)}` : '–';
@@ -18,7 +19,7 @@ export function performanceDetail(performance) {
         const result = performance[context];
         return `<p><strong>${context === 'general' ? '일반 덱' : '팩 전용 덱'}</strong> · ${delta(result)}<br>
           95% 구간 ${range(result)} · ${result?.seeds || 0}개 독립 시드<br>
-          ${result ? `카드 사용 전투 ${num(result.playedRate * 100)}% · 무승부 ${num(result.drawRate * 100)}% · 성능지수 ${result.calibrated ? num(result.index) : '미확정'}` : ''}</p>`;
+          ${result ? `카드 사용 전투 ${num(result.playedRate * 100)}% · 무승부 ${num(result.drawRate * 100)}% · 빈 슬롯 대비 ${signed(result.benefit.mean * 100)}%p${result.calibrated ? '' : ' (표본 부족)'}` : ''}</p>`;
       }).join('')}
       <p class="config-hint">조건별 효과는 정해진 상태에서 측정한 값이며, 그 조건의 실전 달성 확률은 아닙니다.</p>
     </div>`;
@@ -27,23 +28,25 @@ export function performanceDetail(performance) {
 export function performanceReportHTML(report) {
     if (!report) return '<div class="empty-state"><p>성능 측정 결과가 없습니다.</p></div>';
     const measured = Object.keys(report.cards).length;
-    const targets = Object.entries(report.tierTargets).map(([tier, value]) => `T${tier} ${num(value)}`).join(' · ');
+    const targets = Object.entries(report.tierTargets).map(([tier, value]) => `T${tier} ${signed(value * 100)}%p`).join(' · ');
     return `<p>${report.status === 'complete' ? '측정 완료' : '중지된 부분 결과'} · ${measured}/${report.config.cardIds.length}장 · 덱 ${report.config.deckSize}장 · 시작 시드 ${report.config.seed}</p>
-      <p class="config-hint">티어 기준 초안: ${targets}. T1은 고정 1, 나머지는 검증된 일반 덱 성능지수의 중앙값입니다.</p>
-      <p class="config-hint">성능지수 = 빈 슬롯 대비 추가 승점 ÷ 신속 타격의 추가 승점. 1은 기준 카드와 같은 기여를 뜻하며 피해량 배수가 아닙니다. 승리 1·무승부 0.5·패배 0으로 계산합니다.</p>
+      <p class="config-hint">티어 기준: ${targets || '아직 없음'}. 같은 티어에서 200 시드 이상 측정된 카드 3장 이상의 빈 슬롯 대비 승점 변화 중앙값이에요.</p>
+      <p class="config-hint">티어 대비 = 카드의 빈 슬롯 대비 승점 변화 ÷ 티어 기준. 1이면 그 티어의 보통 카드만큼 기여해요. 승리 1·무승부 0.5·패배 0으로 계산해요.</p>
       <div class="performance-scroll"><table class="performance-table"><thead><tr>
-      <th>카드</th><th>기본 1회 효과</th><th>조건별 변화</th><th>일반 덱 승점 변화</th><th>팩 전용 덱 승점 변화</th><th>성능지수</th>
+      <th>카드</th><th>기본 1회 효과</th><th>조건별 변화</th><th>일반 덱 승점 변화</th><th>팩 전용 덱 승점 변화</th><th>티어 대비</th>
       </tr></thead><tbody>${Object.entries(report.cards).map(([id, result]) => {
         const card = getCardById(id), basic = result.probes.basic, prepared = result.probes.prepared;
         const value = basic.immediate;
         const units = `공격 ${num(basic.attackUnits)} · 방어 ${num(basic.defenseUnits)}`;
         const later = prepared.checkpoints.find(point => point.turn === 3);
+        const relative = tierRatio(result.general, report.tierTargets[card.tier]);
         return `<tr data-card="${id}" tabindex="0"><th>${card.name}<small>T${card.tier} · ${card.pack}</small></th>
           <td>${basic.playableRate ? `비용 ${num(basic.effectiveCost)}<br>${units}<br>회복 ${num(value.healing)} · 드로우 ${num(value.drawn)}` : '사용 불가'}</td>
           <td>${prepared.playableRate ? `준비 후 공격 ${num(prepared.attackUnits)} · 방어 ${num(prepared.defenseUnits)}<br>원본 카드 총사용 ${num(prepared.uses)}회` : '준비 후에도 사용 불가'}
           ${later?.metrics ? `<small>3턴 대조 차이: 피해 ${signed(later.metrics.damageHp + later.metrics.damageShield)}, 실드 ${signed(later.metrics.shield)}</small>` : ''}</td>
           ${['general', 'dedicated'].map(context => `<td>${delta(result[context])}<small>95% ${range(result[context])}<br>${result[context]?.seeds || 0}시드 · 카드 사용 ${num((result[context]?.playedRate || 0) * 100)}%</small></td>`).join('')}
-          <td>${result.general?.calibrated ? num(result.general.index) : '미확정'}<small>${result.general?.index != null ? `추정 ${num(result.general.index)}` : '기준 기여 부족'}${result.general?.calibrated ? `<br>95% ${num(result.general.indexInterval[0])} ~ ${num(result.general.indexInterval[1])}` : ''}</small></td></tr>`;
+          <td>${relative ? num(relative.ratio) : '미확정'}<small>${relative?.low != null ? `95% ${num(relative.low)} ~ ${num(relative.high)}`
+            : result.general?.calibrated ? `T${card.tier} 기준 없음` : '표본 부족'}</small></td></tr>`;
       }).join('')}</tbody></table></div>
       <p class="config-hint">코어·재구축의 3/5턴 값은 정해진 후속 행동을 실행한 뒤 빈 슬롯 대조와 비교한 진단값입니다. 실전 기여에는 준비 카드와 설치 비용도 포함됩니다.</p>`;
 }

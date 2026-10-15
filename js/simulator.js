@@ -8,7 +8,7 @@
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
 import { getAllCards } from './cards.js';
-import { PerformanceEvaluator, validatePerformanceReport } from './performance.js';
+import { PerformanceEvaluator, validatePerformanceReport, tierRatio } from './performance.js';
 
 export class Simulator {
     constructor() {
@@ -273,36 +273,34 @@ export class Simulator {
      * 분석 결과 가져오기
      */
     getAnalysis() {
+        const grade = value => value >= 1.5 ? 'S' : value >= 1.2 ? 'A' : value >= 0.9 ? 'B' : value >= 0.65 ? 'C' : value >= 0.45 ? 'D' : 'F';
         const tierList = this.ai.getCardTierList().map(card => {
             const performance = this.performanceReport?.cards[card.id];
-            const general = performance?.general;
-            const baseline = this.performanceReport?.tierTargets[card.tier] ?? null;
-            const ratio = general?.calibrated && baseline ? general.index / baseline : null;
-            const grade = value => value >= 1.5 ? 'S' : value >= 1.2 ? 'A' : value >= 0.9 ? 'B' : value >= 0.65 ? 'C' : value >= 0.45 ? 'D' : 'F';
-            let valueTier = '?';
-            if (ratio !== null && general.indexInterval
-                && grade(general.indexInterval[0] / baseline) === grade(general.indexInterval[1] / baseline)) valueTier = grade(ratio);
-            return { ...card, performance, baseline, ratio, valueTier };
+            const baseline = this.performanceReport?.tierTargets?.[card.tier] ?? null;
+            const measured = tierRatio(performance?.general, baseline);
+            // 실측 구간 전체가 한 등급 안이면 실측 등급, 아니면 학습 대전의 선택 가중치로 잠정 등급
+            if (measured?.low != null && grade(measured.low) === grade(measured.high)) {
+                return { ...card, performance, baseline, measured, ratio: measured.ratio,
+                    valueTier: grade(measured.ratio), gradeSource: 'measured' };
+            }
+            const used = card.totalUses > 0;
+            const ratio = used ? Math.round(card.weight / card.selectionBaseline * 10000) / 10000 : null;
+            return { ...card, performance, baseline, measured, ratio,
+                valueTier: used ? grade(ratio) : '?', gradeSource: used ? 'provisional' : null };
         }).sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
         const history = this.ai.history;
 
-        // OP/UP 카드 감지 (Baseline 대비 비율로 판정)
+        // OP/UP 카드 감지: 실측 구간이 티어 중앙값보다 확실히 높거나 낮을 때만
         const warnings = [];
+        const pct = value => `${Math.round(value * 100)}%`;
         for (const card of tierList) {
-            if (card.performance?.general?.calibrated && card.baseline
-                && card.performance.general.indexInterval?.[0] / card.baseline >= 1.8) {
-                warnings.push({
-                    type: 'OP', card,
-                    message: `${card.name} — 실측 기준 초안 대비 우세. 일반 덱 성능지수 ${card.performance.general.index.toFixed(2)} (추가 검토 필요)`
-                });
-            }
-            if (card.performance?.general?.calibrated && card.baseline
-                && card.performance.general.indexInterval?.[1] / card.baseline <= 0.4) {
-                warnings.push({
-                    type: 'UP', card,
-                    message: `${card.name} — 실측 기준 초안 대비 열세. 일반 덱 성능지수 ${card.performance.general.index.toFixed(2)} (추가 검토 필요)`
-                });
-            }
+            const m = card.measured;
+            if (m?.low == null) continue;
+            const range = `95% ${pct(m.low)}~${pct(m.high)}`;
+            if (m.low >= 1.8) warnings.push({ type: 'OP', card,
+                message: `${card.name} — 승점 기여가 T${card.tier} 중앙값의 ${pct(m.ratio)} (${range}). 추가 검토 필요` });
+            if (m.high <= 0.4) warnings.push({ type: 'UP', card,
+                message: `${card.name} — 승점 기여가 T${card.tier} 중앙값의 ${pct(m.ratio)} (${range}). 추가 검토 필요` });
         }
 
         // 팩별 승률
@@ -372,6 +370,7 @@ export class Simulator {
                 rarity: card.rarity,
                 ratio: card.ratio,
                 valueTier: card.valueTier,
+                gradeSource: card.gradeSource,
                 totalUses: card.totalUses || 0,
                 deckInclusions: card.deckInclusions || 0,
                 deckWinRate: card.deckWinRate,

@@ -121,11 +121,11 @@
           </div>
           <div class="performance-controls">
             <label>측정 대상 <select id="evaluation-scope"><option value="pilot">대표 카드 (최대 16장)</option><option value="all">선택한 팩·티어의 전체 카드</option></select></label>
-            <label>카드·덱별 시드 수 <input id="evaluation-seeds" type="number" min="2" max="5000" value="50"></label>
+            <label>카드·덱별 시드 수 <input id="evaluation-seeds" type="number" min="2" max="5000" value="200"></label>
             <label>시작 시드 <input id="evaluation-seed" type="number" min="0" max="4294967295" value="1"></label>
             <button class="btn btn-primary" id="btn-evaluate">성능 측정 시작</button>
           </div>
-          <p class="config-hint">일반 덱·팩 전용 덱에서 같은 슬롯을 교체해 비교해요. 성능지수 확정은 200개 이상 시드와 기준 카드의 기여 확인이 필요해요.</p>
+          <p class="config-hint">일반 덱·팩 전용 덱에서 같은 슬롯을 교체해 비교해요. 카드당 200 시드 이상이면 측정이 확정되고, 같은 티어에서 3장 이상 확정되면 그 티어의 기준이 생겨요.</p>
         </section>
 
         <!-- Gen Results (실시간) -->
@@ -139,7 +139,7 @@
         <section class="tab-panel card active" id="panel-tierlist">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg></span>밸류 티어</h2>
-            <p>성능지수가 확인된 카드만 티어 기준 초안 대비로 배치해요. 표본이나 기준 기여가 부족한 카드는 미평가(?)예요.</p>
+            <p>학습 대전 결과로 잠정 등급을 매기고, 성능 측정으로 등급이 확정된 카드는 '실측' 표시와 함께 그 등급으로 바꿔요. 사용 기록이 없는 카드는 미평가(?)예요.</p>
           </header>
           <div id="tier-list">
             <div class="empty-state">
@@ -187,7 +187,7 @@
         <section class="tab-panel card" id="panel-heatmap">
           <header class="panel-head">
             <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg></span>티어 히트맵</h2>
-            <p>실측 성능지수를 티어 기준 초안과 비교해요. 측정이 충분하지 않은 카드는 회색으로 표시해요.</p>
+            <p>밸류 티어와 같은 등급을 색으로 보여줘요. 실측이 없는 카드는 학습 대전 기준 잠정 등급이에요.</p>
           </header>
           <div id="tier-heatmap">
             <div class="empty-state">
