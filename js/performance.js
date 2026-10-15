@@ -15,6 +15,10 @@ const EMPTY = { id: 'EVAL_EMPTY', name: '빈 슬롯', type: 'skill', pack: 'eval
 const SCENARIOS = ['basic', 'developed', 'prepared'];
 const MIN_TRIALS = 200;      // 카드 한 장의 측정을 확정하는 최소 시드 수
 const MIN_TIER_CARDS = 3;    // 티어 기준(중앙값)을 만드는 최소 확정 카드 수
+const MIN_RANK_CARDS = 10;   // 티어 안 순위로 등급을 매기는 최소 확정 카드 수
+const OP_TOP_SHARE = 0.05;   // OP 경고: 티어 상위 5%이면서 확실히 도움이 되는 카드
+// 상위 누적 비율 → 등급: 상위 10% S, 다음 20% A, 중간 40% B, 다음 20% C, 하위 10% D
+const GRADE_BANDS = [['S', 0.1], ['A', 0.3], ['B', 0.7], ['C', 0.9], ['D', 1]];
 const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
 const round = value => Math.round(value * 10000) / 10000;
 
@@ -334,13 +338,23 @@ export function calibrateTiers(cards) {
     return targets;
 }
 
-// 티어 기준 대비 비율과 95% 구간. 확정 전이거나 티어 기준이 없으면 null.
-// ponytail: 중앙값은 여러 카드에서 나와 흔들림이 작다고 보고 고정값으로 나눔. 구간이 너무 좁아 보이면 부트스트랩으로 중앙값 오차까지 반영.
-export function tierRatio(general, target) {
-    if (!general?.calibrated || !(target > 0)) return null;
-    const { mean: average, low, high } = general.benefit;
-    return { ratio: round(average / target),
-        low: low === null ? null : round(low / target), high: high === null ? null : round(high / target) };
+// 같은 티어에서 확정된 카드를 빈 슬롯 대비 승점 변화 순으로 줄 세워 등급을 매긴다.
+// top = 순위 ÷ 카드 수(작을수록 상위), topRange = 승점이 95% 구간 위·아래 끝일 때의 순위 비율.
+export function rankTiers(cards) {
+    const ranks = {};
+    for (const tier of [1, 2, 3, 4, 5]) {
+        const entries = Object.entries(cards).filter(([id, result]) => getCardById(id).tier === tier && result.general?.calibrated)
+            .map(([id, result]) => ({ id, ...result.general.benefit }));
+        if (entries.length < MIN_RANK_CARDS) continue;
+        const share = (self, value) => (entries.filter(other => other.id !== self && other.mean > value).length + 1) / entries.length;
+        for (const { id, mean: gain, low, high } of entries) {
+            const top = share(id, gain);
+            ranks[id] = { tier, gain, low, high, top: round(top), topRange: [round(share(id, high)), round(share(id, low))],
+                grade: high < 0 ? 'F' : GRADE_BANDS.find(([, limit]) => top <= limit)[0],
+                op: top <= OP_TOP_SHARE && low > 0, up: high < 0 };
+        }
+    }
+    return ranks;
 }
 
 export class PerformanceEvaluator {

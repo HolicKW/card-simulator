@@ -8,7 +8,12 @@
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
 import { getAllCards } from './cards.js';
-import { PerformanceEvaluator, validatePerformanceReport, tierRatio } from './performance.js';
+import { PerformanceEvaluator, validatePerformanceReport, rankTiers } from './performance.js';
+
+// 등급 순(S→?)으로, 같은 등급 안에서는 실측 카드를 상위 순위부터, 잠정 카드는 비율 높은 순으로
+const GRADE_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4, F: 5, '?': 6 };
+const score = card => card.measured ? 10 - card.measured.top : card.ratio ?? -1;
+const byGrade = (a, b) => GRADE_ORDER[a.valueTier] - GRADE_ORDER[b.valueTier] || score(b) - score(a);
 
 export class Simulator {
     constructor() {
@@ -274,33 +279,30 @@ export class Simulator {
      */
     getAnalysis() {
         const grade = value => value >= 1.5 ? 'S' : value >= 1.2 ? 'A' : value >= 0.9 ? 'B' : value >= 0.65 ? 'C' : value >= 0.45 ? 'D' : 'F';
+        const ranks = rankTiers(this.performanceReport?.cards || {});
         const tierList = this.ai.getCardTierList().map(card => {
             const performance = this.performanceReport?.cards[card.id];
-            const baseline = this.performanceReport?.tierTargets?.[card.tier] ?? null;
-            const measured = tierRatio(performance?.general, baseline);
-            // 실측 구간 전체가 한 등급 안이면 실측 등급, 아니면 학습 대전의 선택 가중치로 잠정 등급
-            if (measured?.low != null && grade(measured.low) === grade(measured.high)) {
-                return { ...card, performance, baseline, measured, ratio: measured.ratio,
-                    valueTier: grade(measured.ratio), gradeSource: 'measured' };
-            }
+            const measured = ranks[card.id];
+            // 같은 티어에서 충분히 측정되면 티어 안 순위로 실측 등급, 아니면 학습 대전의 선택 가중치로 잠정 등급
+            if (measured) return { ...card, performance, measured, ratio: null, valueTier: measured.grade, gradeSource: 'measured' };
             const used = card.totalUses > 0;
             const ratio = used ? Math.round(card.weight / card.selectionBaseline * 10000) / 10000 : null;
-            return { ...card, performance, baseline, measured, ratio,
+            return { ...card, performance, measured: null, ratio,
                 valueTier: used ? grade(ratio) : '?', gradeSource: used ? 'provisional' : null };
-        }).sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
+        }).sort(byGrade);
         const history = this.ai.history;
 
-        // OP/UP 카드 감지: 실측 구간이 티어 중앙값보다 확실히 높거나 낮을 때만
+        // OP/UP 경고: 빈 칸보다 확실히 나쁜 카드(UP)와 티어 상위 5%이면서 확실히 도움이 되는 카드(OP)
         const warnings = [];
-        const pct = value => `${Math.round(value * 100)}%`;
+        const points = value => `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)}%p`;
         for (const card of tierList) {
             const m = card.measured;
-            if (m?.low == null) continue;
-            const range = `95% ${pct(m.low)}~${pct(m.high)}`;
-            if (m.low >= 1.8) warnings.push({ type: 'OP', card,
-                message: `${card.name} — 승점 기여가 T${card.tier} 중앙값의 ${pct(m.ratio)} (${range}). 추가 검토 필요` });
-            if (m.high <= 0.4) warnings.push({ type: 'UP', card,
-                message: `${card.name} — 승점 기여가 T${card.tier} 중앙값의 ${pct(m.ratio)} (${range}). 추가 검토 필요` });
+            if (!m) continue;
+            const range = `95% ${points(m.low)} ~ ${points(m.high)}`;
+            if (m.up) warnings.push({ type: 'UP', card,
+                message: `${card.name} — 빈 칸보다 승점 ${points(m.gain)} (${range}). 넣으면 덱이 약해져요` });
+            if (m.op) warnings.push({ type: 'OP', card,
+                message: `${card.name} — T${card.tier} 상위 ${Math.round(m.top * 100)}% · 빈 칸 대비 승점 ${points(m.gain)} (${range})` });
         }
 
         // 팩별 승률
@@ -371,6 +373,7 @@ export class Simulator {
                 ratio: card.ratio,
                 valueTier: card.valueTier,
                 gradeSource: card.gradeSource,
+                measured: card.measured,
                 totalUses: card.totalUses || 0,
                 deckInclusions: card.deckInclusions || 0,
                 deckWinRate: card.deckWinRate,
@@ -378,9 +381,9 @@ export class Simulator {
                 byTierMatch: card.byTierMatch || {}
             });
         }
-        // 각 티어 내 ratio 높은 순 정렬
+        // 각 티어 안에서 밸류 티어와 같은 순서로 정렬
         for (const tier of Object.keys(tierHeatmap)) {
-            tierHeatmap[tier].sort((a, b) => (b.ratio || 0) - (a.ratio || 0));
+            tierHeatmap[tier].sort(byGrade);
         }
 
         return {

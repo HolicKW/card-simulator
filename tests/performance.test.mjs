@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { CardAI } from '../js/ai.js';
 import { Simulator } from '../js/simulator.js';
 import { getAllCards } from '../js/cards.js';
-import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, calibrateTiers, PerformanceEvaluator } from '../js/performance.js';
+import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, calibrateTiers, rankTiers, PerformanceEvaluator } from '../js/performance.js';
 import { performanceReportHTML } from '../js/performance-view.js';
 import { card } from './helpers.mjs';
 
@@ -12,6 +12,7 @@ const record = (winner, logs = [ordinary], side) => ({ side, enemy: 'T1 미러',
 // 빈 슬롯 대비 승점 변화가 시드마다 values를 순환하는 일반 덱 측정 결과
 const gain = (...values) => ({ general: summarizeTrials(Array.from({ length: 200 }, (_, index) => ({ seed: index,
     candidate: values[index % values.length], reference: 0, empty: 0, played: 1, uses: 1, draws: 0, selfDefeats: 0 }))) });
+const tierOne = getAllCards().filter(next => next.tier === 1).map(next => next.id);
 
 export const tests = [
     ['seed scopes reproduce effects and restore global randomness even after an exception', () => {
@@ -84,26 +85,42 @@ export const tests = [
         const few = { BASE_001: { general: summarizeTrials([gain(0.2).general.trials[0]]) }, BASE_002: gain(0.4), BASE_005: gain(0.1) };
         assert.deepEqual(calibrateTiers(few), {});
     }],
-    ['learning gives provisional grades and conclusive measurements override them', () => {
+    ['measured cards are graded by rank within their tier and clearly harmful cards are F', () => {
+        // 승점 +20%p ~ +1%p 20장, 빈 칸보다 확실히 나쁜 카드(-5%p) 1장
+        const ids = tierOne.slice(0, 21);
+        const ranks = rankTiers(Object.fromEntries(ids.map((id, index) => [id, index < 20 ? gain((20 - index) / 100) : gain(-0.05)])));
+        assert.equal(ids.map(id => ranks[id].grade).join(''), 'SSAAAABBBBBBBBCCCCDDF');
+        assert.deepEqual(ids.filter(id => ranks[id].op), [ids[0]]);
+        assert.deepEqual(ids.filter(id => ranks[id].up), [ids[20]]);
+        assert.equal(ranks[ids[0]].top, 0.0476); assert.deepEqual(ranks[ids[0]].topRange, [0.0476, 0.0476]);
+        // 표본이 흔들리는 카드는 순위 범위가 넓게 나온다
+        const noisy = rankTiers({ ...Object.fromEntries(ids.slice(0, 20).map((id, index) => [id, gain((20 - index) / 100)])), [ids[20]]: gain(-0.3, 0.5) });
+        const [best, worst] = noisy[ids[20]].topRange;
+        assert.ok(best < noisy[ids[20]].top && noisy[ids[20]].top < worst);
+        assert.deepEqual(rankTiers(Object.fromEntries(ids.slice(0, 9).map(id => [id, gain(0.1)]))), {});
+    }],
+    ['learning gives provisional grades and ranked measurements override them', () => {
         const sim = new Simulator();
         sim.ai.endGeneration([record('player', [ordinary], 'A')]);
         sim.ai.cardWeights.set('DM_007', 0.5);
         const graded = () => sim.getAnalysis().tierList.find(next => next.id === 'DM_007');
         assert.equal(graded().valueTier, 'D'); assert.equal(graded().gradeSource, 'provisional');
         assert.equal(sim.getAnalysis().tierList.find(next => next.id === 'BASE_040').valueTier, '?');
-        sim.performanceReport = { tierTargets: { 1: 0.2 }, cards: { DM_007: gain(0.4) } };
-        assert.equal(graded().valueTier, 'S'); assert.equal(graded().gradeSource, 'measured'); assert.equal(graded().ratio, 2);
-        assert.ok(sim.getAnalysis().warnings.some(warning => warning.type === 'OP' && warning.card.id === 'DM_007'));
-        // 평균은 A/B 경계(1.2)에 있어 구간이 두 등급에 걸치므로 잠정 등급을 유지한다
-        sim.performanceReport = { tierTargets: { 1: 0.2 }, cards: { DM_007: gain(0.14, 0.34) } };
+        const others = tierOne.filter(id => id !== 'DM_007').slice(0, 20);
+        sim.performanceReport = { tierTargets: {}, cards: { ...Object.fromEntries(others.map((id, index) => [id, gain((index + 1) / 100)])), DM_007: gain(0.5) } };
+        assert.equal(graded().valueTier, 'S'); assert.equal(graded().gradeSource, 'measured');
+        assert.deepEqual(sim.getAnalysis().warnings.map(warning => warning.type + ' ' + warning.card.id), ['OP DM_007']);
+        // 같은 티어 측정 카드가 10장 미만이면 순위를 매기지 않고 잠정 등급을 유지한다
+        sim.performanceReport = { tierTargets: {}, cards: { DM_007: gain(0.5) } };
         assert.equal(graded().valueTier, 'D'); assert.equal(graded().gradeSource, 'provisional');
         assert.equal(sim.getAnalysis().warnings.length, 0);
     }],
-    ['measurement table shows confirmed cards relative to their tier baseline', () => {
-        const report = { status: 'complete', config: { cardIds: ['BASE_002'], deckSize: 20, seed: 1 }, tierTargets: { 1: 0.2 },
-            cards: { BASE_002: { probes: measureCard('BASE_002', 1), ...gain(0.3), dedicated: gain(0.1).general } } };
+    ['measurement table shows each confirmed card rank within its tier', () => {
+        const probes = measureCard('BASE_002', 1), ids = tierOne.slice(0, 10);
+        const report = { status: 'complete', config: { cardIds: ids, deckSize: 20, seed: 1 }, tierTargets: { 1: 0.05 },
+            cards: Object.fromEntries(ids.map((id, index) => [id, { probes, ...gain((10 - index) / 100), dedicated: gain(0.01).general }])) };
         const html = performanceReportHTML(report);
-        assert.match(html, />1\.50</);   // 0.3 ÷ 0.2, 표의 소수 둘째 자리 표기
+        assert.match(html, /상위 10%/);   // 10장 중 1위
         assert.doesNotMatch(html, /NaN|undefined|Infinity|미확정/);
     }],
     ['one battle credits a rebuild card once while retaining all plays and unused deck inclusions', () => {

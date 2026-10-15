@@ -120,12 +120,12 @@
             </div>
           </div>
           <div class="performance-controls">
-            <label>측정 대상 <select id="evaluation-scope"><option value="pilot">대표 카드 (최대 16장)</option><option value="all">선택한 팩·티어의 전체 카드</option></select></label>
+            <label>측정 대상 <select id="evaluation-scope"><option value="all" selected>선택한 팩·티어의 전체 카드 (약 5분)</option><option value="pilot">대표 카드 16장 (빠른 확인용, 등급 없음)</option></select></label>
             <label>카드·덱별 시드 수 <input id="evaluation-seeds" type="number" min="2" max="5000" value="200"></label>
             <label>시작 시드 <input id="evaluation-seed" type="number" min="0" max="4294967295" value="1"></label>
             <button class="btn btn-primary" id="btn-evaluate">성능 측정 시작</button>
           </div>
-          <p class="config-hint">일반 덱·팩 전용 덱에서 같은 슬롯을 교체해 비교해요. 카드당 200 시드 이상이면 측정이 확정되고, 같은 티어에서 3장 이상 확정되면 그 티어의 기준이 생겨요.</p>
+          <p class="config-hint">일반 덱·팩 전용 덱에서 같은 슬롯을 교체해 비교해요. 카드당 200 시드 이상이면 측정이 확정되고, 같은 티어에서 10장 이상 확정되면 티어 안 순위로 실측 등급을 매겨요.</p>
         </section>
 
         <!-- Gen Results (실시간) -->

@@ -14,6 +14,14 @@ const TIER_COLORS = {
   C: '#03B26C', D: '#3182F6', F: '#8B95A1', '?': '#B0B8C1'
 };
 
+// 히트맵 색: 등급별 (실측·잠정 공통)
+const HEAT_COLORS = { S: '#F04452', A: '#FF8A00', B: '#03B26C', C: '#3182F6', D: '#8B95A1', F: '#B0B8C1', '?': '#D1D6DB' };
+
+// 칩·히트맵·팝오버 공용 표기: 실측은 티어 안 순위, 잠정은 학습 기준 비율
+const gradeLabel = (c) => c.measured ? `상위 ${Math.round(c.measured.top * 100)}%`
+  : c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`;
+const points = (value) => `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)}%p`;
+
 // 승률(%) → 막대 색: 55% 이상 초록, 45% 이하 빨강, 그 사이 회색
 const rateColor = (pct) => (pct >= 55 ? '#03B26C' : pct <= 45 ? '#F04452' : '#B0B8C1');
 
@@ -276,7 +284,7 @@ class App {
           ${cards.map(c => `
             <div class="tier-card ${c.rarity}" data-card="${c.id}" tabindex="0">
               <span class="card-name">${c.name}</span>
-              <span class="card-weight">T${c.tier} ${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</span>
+              <span class="card-weight">T${c.tier} ${gradeLabel(c)}</span>
               ${c.gradeSource === 'measured' ? '<span class="measured-badge">실측</span>' : ''}
             </div>
           `).join('')}
@@ -355,7 +363,10 @@ class App {
       </div>
       ${info?.description ? `<p class="pop-desc">${info.description}</p>` : ''}
       ${info?.keywords?.length ? `<div class="pop-keywords">${info.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('')}</div>` : ''}
-      <div class="pop-hero"><span>${c.gradeSource === 'measured' ? '실측 · 티어 중앙값 대비' : c.gradeSource === 'provisional' ? '잠정 · 학습 대전 기준' : '미평가'}</span><strong>${c.ratio == null ? '미평가' : `${Math.round(c.ratio * 100)}%`}</strong></div>
+      ${c.measured ? `<div class="pop-hero"><span>실측 · T${c.tier} ${gradeLabel(c)}
+          <small>순위 범위 상위 ${Math.round(c.measured.topRange[0] * 100)}~${Math.round(c.measured.topRange[1] * 100)}% · 95% ${points(c.measured.low)} ~ ${points(c.measured.high)}</small></span>
+          <strong>${points(c.measured.gain)}</strong></div>`
+        : `<div class="pop-hero"><span>${c.gradeSource === 'provisional' ? '잠정 · 학습 대전 기준' : '미평가'}</span><strong>${gradeLabel(c)}</strong></div>`}
       <dl class="pop-stats">
         ${stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
       </dl>
@@ -571,15 +582,6 @@ class App {
       return;
     }
 
-    const getHeatColor = (ratio) => {
-      if (ratio >= 1.5) return '#F04452';
-      if (ratio >= 1.2) return '#FF8A00';
-      if (ratio >= 0.9) return '#03B26C';
-      if (ratio >= 0.65) return '#3182F6';
-      if (ratio >= 0.45) return '#8B95A1';
-      return '#B0B8C1';
-    };
-
     let html = '';
 
     for (const tier of Object.keys(tierHeatmap).sort((a, b) => a - b)) {
@@ -588,12 +590,10 @@ class App {
       html += `<h4>Tier ${tier}</h4>`;
       html += `<div class="heatmap-grid">`;
       for (const card of cards) {
-        const pct = card.ratio != null ? Math.round(card.ratio * 100) : '?';
-        const bg = card.ratio != null && card.valueTier !== '?' ? getHeatColor(card.ratio) : '#D1D6DB';
-        html += `<div class="heatmap-cell" style="--heat:${bg}" data-card="${card.id}" tabindex="0">`;
+        html += `<div class="heatmap-cell" style="--heat:${HEAT_COLORS[card.valueTier]}" data-card="${card.id}" tabindex="0">`;
         html += `<span class="hm-name">${card.name}</span>`;
         html += `<span class="hm-grade">${card.valueTier}</span>`;
-        html += `<span class="hm-pct">${card.ratio == null ? '미평가' : `${pct}%`}</span>`;
+        html += `<span class="hm-pct">${gradeLabel(card)}</span>`;
         html += `</div>`;
       }
       html += `</div></div>`;

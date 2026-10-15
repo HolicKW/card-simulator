@@ -1601,6 +1601,13 @@ button {
   color: var(--grey-600);
 }
 
+.pop-hero small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--grey-500);
+}
+
 .pop-hero strong {
   font-size: 22px;
   font-weight: 800;
