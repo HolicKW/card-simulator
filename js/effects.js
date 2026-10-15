@@ -1,1399 +1,640 @@
-/**
- * effects.js — 키워드 이펙트 레지스트리
- * 
- * 각 키워드(오버클럭, 해체, 추출 등)의 로직을 독립 모듈로 등록.
- * 새 키워드 추가 시: EffectRegistry.register('키워드명', handlerFn) 한 줄이면 끝.
- */
+/** Runtime port of NewWorld EffectInterpreter and its registered aliases. */
+import { roundToInt, hasKeyword, cloneCard } from './battle-rules.js';
+import { registerBioGambleEffects, resolveGamble } from './effects-bio-gamble.js';
+
+const v = e => e.value ?? 0;
+const n = (entity, key) => entity?.[key] ?? 0;
+const turn = entity => entity.turn ??= {};
+const tv = (entity, key) => turn(entity)[key] ?? 0;
+const add = (entity, key, value) => { entity[key] = n(entity, key) + value; };
+const addTurn = (entity, key, value) => { turn(entity)[key] = tv(entity, key) + value; };
+const randomIndex = count => Math.floor(Math.random() * count);
+const targetOf = ctx => ctx.effect.target === 'self' ? ctx.caster : ctx.target;
+const ocVal = ctx => ctx.effect.overclockScale && ctx.overclockScale > 0 ? v(ctx.effect) * ctx.overclockScale : v(ctx.effect);
 
 export class EffectRegistry {
-  constructor() {
-    /** @type {Map<string, Function>} */
-    this.handlers = new Map();
-  }
-
-  /**
-   * 키워드 핸들러 등록
-   * @param {string} keyword 
-   * @param {(ctx: EffectContext) => void} handler 
-   */
-  register(keyword, handler) {
-    this.handlers.set(keyword, handler);
-  }
-
-  /**
-   * 키워드 핸들러 실행
-   * @param {string} keyword 
-   * @param {EffectContext} ctx 
-   */
-  execute(keyword, ctx) {
-    const handler = this.handlers.get(keyword);
-    if (!handler) {
-      console.warn(`[EffectRegistry] Unknown keyword: ${keyword}`);
-      return;
+    constructor() { this.handlers = new Map(); }
+    register(type, handler) { this.handlers.set(type, handler); }
+    has(type) { return this.handlers.has(type); }
+    execute(type, ctx) {
+        const handler = this.handlers.get(type);
+        if (!handler) throw new Error(`[EffectRegistry] Unregistered effect: ${type}`);
+        handler(ctx);
     }
-    handler(ctx);
-  }
-
-  has(keyword) {
-    return this.handlers.has(keyword);
-  }
+    executeAll(effects, ctx) {
+        if (effects == null) return;
+        ctx.depth = (ctx.depth ?? 0) + 1;
+        if (ctx.depth > 10) {
+            ctx.depth--;
+            console.warn('[EffectRegistry] Maximum effect nesting depth (10) exceeded.');
+            return;
+        }
+        try {
+            for (const effect of effects) {
+                if (ctx.engine?.isBattleEnded?.(ctx.caster)) break;
+                ctx.effect = effect;
+                this.execute(effect.type, ctx);
+                if (ctx.abortRemainingEffects) { ctx.abortRemainingEffects = false; break; }
+            }
+        } finally { ctx.depth--; }
+    }
 }
 
-/**
- * @typedef {Object} EffectContext
- * @property {import('./engine.js').BattleState} state
- * @property {Object} caster - 시전자 (player or enemy)
- * @property {Object} target - 대상
- * @property {Object} card - 사용된 카드
- * @property {Object} effect - 개별 이펙트 데이터 { type, value, ... }
- * @property {import('./engine.js').BattleEngine} engine
- */
+export function matchesFilter(card, filter) {
+    if (!card) return false;
+    if (['network', 'overclock', 'extract', 'virus'].includes(filter)) return hasKeyword(card, filter);
+    if (filter === 'attack') return card.type === 'attack';
+    if (filter === 'skill') return card.type === 'skill';
+    if (filter === 'core') return card.type === 'power';
+    if (filter === 'coreOrSkill') return card.type === 'power' || card.type === 'skill';
+    return false;
+}
 
-/**
- * 기본 이펙트 핸들러들을 레지스트리에 등록
- * @param {EffectRegistry} registry 
- */
-export function registerCoreEffects(registry) {
-
-  // 오버클럭 스케일 적용 헬퍼: effect에 overclockScale: true가 있고 ctx.overclockScale > 0이면 value * scale
-  const ocVal = (ctx) =>
-    (ctx.effect.overclockScale && ctx.overclockScale > 0)
-      ? ctx.effect.value * ctx.overclockScale
-      : ctx.effect.value;
-
-  // 디메리트 전용 오버클럭 스케일 헬퍼: fixedDemerit 파워가 있으면 스택을 고정값으로 대체
-  const demeritOcVal = (ctx) => {
-    if (!ctx.effect.overclockScale) return ctx.effect.value;
-    const scale = ctx.demeritOCScale ?? ctx.overclockScale;
-    return scale > 0 ? ctx.effect.value * scale : ctx.effect.value;
-  };
-
-  // 디메리트 소스 스택 헬퍼: overclockStacks 소스일 때 fixedDemerit 고정값 적용
-  const demeritStacks = (ctx, source) =>
-    (source === 'overclockStacks' && ctx.demeritOCScale !== undefined)
-      ? ctx.demeritOCScale
-      : (ctx.caster[source] || 0);
-
-  // 자해 헬퍼: 방어도 먼저 소모 후 체력 차감, selfDamageThisTurn 추적
-  const applySelfDamage = (caster, amount) => {
-    amount = Math.floor(amount);
-    if (amount <= 0) return;
-    // 다음 카드 자해 면제 플래그 체크
-    if (caster._preventSelfDamageThisCard) return;
-    const shieldAbs = Math.min(caster.shield || 0, amount);
-    caster.shield -= shieldAbs;
-    const hpLoss = amount - shieldAbs;
-    caster.hp = Math.max(0, (caster.hp || 0) - hpLoss);
-    caster.selfDamageThisTurn = (caster.selfDamageThisTurn || 0) + hpLoss;
-  };
-
-  // ─── 기본 이펙트 ───
-  registry.register('damage', (ctx) => {
-    let dmg = ocVal(ctx);
-    // 힘/약화: 배율(scale)이 있으면 항상 적용 (데미지+힘 × 배율), 없으면 카드당 1회만 적용
-    const hasScale = ctx.effect.scale !== undefined;
-    const applyStr = hasScale || !ctx._dmgFlags?.strengthApplied;
-    if (applyStr) {
-      dmg += (ctx.caster.strength || 0);
-      dmg -= (ctx.caster.weakness || 0);
-      if (ctx._dmgFlags) ctx._dmgFlags.strengthApplied = true;
+export function getScalingSourceValue(source, ctx) {
+    const c = ctx.caster, t = ctx.target;
+    switch (source) {
+        case 'networkStacks': return n(c, 'networkStacks');
+        case 'networkStacksWithSelf': return n(c, 'networkStacks') + (c.doubleNetworkStacks ? 2 : 1);
+        case 'overclockStacks': return n(c, 'overclockStacks');
+        case 'selfDamageThisTurn': case 'totalDamageThisTurn': case 'dismantledThisTurn':
+        case 'luckyThisTurn': case 'unluckyThisTurn': case 'gambleSuccessThisTurn': return tv(c, source);
+        case 'dismantledThisBattle': case 'luck': case 'hp': case 'maxHp': case 'baseEnergy':
+        case 'luckyThisBattle': case 'unluckyThisBattle': return n(c, source);
+        case 'targetVirus': return n(t, 'virus');
+        case 'targetHandCount': return t?.hand?.length ?? 0;
+        case 'corrosion': return n(t, 'corrosion');
+        case 'enemyMaxHp': return n(t, 'maxHp');
+        case 'overflowStacks': return n(c, 'overflowNext');
+        case 'rebuildCount': return n(c, 'totalRebuildsThisBattle');
+        case 'hpDifference': return Math.abs(n(c, 'hp') - n(t, 'hp'));
+        case 'overclockConsumed': return ctx.overclockConsumed ?? 0;
+        case 'energyConsumed': return ctx.energyConsumed ?? 0;
+        case 'nonBaseCardsInHand': return c.hand.filter(card => card.pack !== 'base').length;
+        case 'targetLostHp': return n(t, 'maxHp') - n(t, 'hp');
+        case 'cardAccumCount': return ctx.card?.accumulationCount ?? 0;
+        default: console.warn(`[EffectRegistry] Unregistered scaling source: ${source}`); return 0;
     }
-    // 네트워크 퍼마넌트 버프 적용
-    if (ctx.card?.keywords?.includes('network') && ctx.caster.networkDamageBuff) {
-      dmg += ctx.caster.networkDamageBuff;
-    }
-    // 배율 적용 (strength/weakness 이후)
-    if (hasScale) dmg = Math.floor(dmg * ctx.effect.scale);
-    // 동적 배율: scaleSource가 있으면 caster의 해당 스탯 값을 배율로 사용
-    if (ctx.effect.scaleSource !== undefined) {
-      dmg = Math.floor(dmg * (ctx.caster[ctx.effect.scaleSource] || 0));
-    }
-    if (dmg < 1) dmg = 1;
+}
 
-    const hits = ctx.effect.hits || 1;
-    for (let i = 0; i < hits; i++) {
-      ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-    }
-  });
+export function computeScalingValue(scaling, ctx) {
+    return scaling == null ? 0 : getScalingSourceValue(scaling.source, ctx) * (scaling.multiplier ?? 0);
+}
 
-  registry.register('shield', (ctx) => {
-    let val = ctx.effect.value;
-    // 네트워크 퍼마넌트 버프 적용
-    if (ctx.card?.keywords?.includes('network') && ctx.caster.networkShieldBuff) {
-      val += ctx.caster.networkShieldBuff;
-    }
-    ctx.caster.shield = (ctx.caster.shield || 0) + val;
-  });
+function effectScalingSource(effect, ctx) {
+    if (!effect.scaling) return 0;
+    const fixedDemerit = effect.action === 'selfDamage' || (effect.stat === 'overflowNext' && effect.target === 'self');
+    if (fixedDemerit && effect.scaling.source === 'overclockStacks' && ctx.caster.fixedOverclockStacks > 0)
+        return ctx.caster.fixedOverclockStacks;
+    return getScalingSourceValue(effect.scaling.source, ctx);
+}
 
-  registry.register('heal', (ctx) => {
-    const amount = ctx.effect.value;
-    ctx.caster.hp = Math.min(ctx.caster.hp + amount, ctx.caster.maxHp);
-  });
-
-  registry.register('healPercent', (ctx) => {
-    const amount = Math.floor(ctx.caster.maxHp * (ctx.effect.value / 100));
-    ctx.caster.hp = Math.min(ctx.caster.hp + amount, ctx.caster.maxHp);
-  });
-
-  registry.register('draw', (ctx) => {
-    const count = Math.floor(ocVal(ctx));
-    for (let i = 0; i < count; i++) {
-      ctx.engine.drawCard(ctx.caster);
-    }
-  });
-
-  registry.register('energy', (ctx) => {
-    ctx.caster.energy = (ctx.caster.energy || 0) + Math.floor(ocVal(ctx));
-  });
-
-  // 다음 턴 시작 시 에너지 획득 (전력 재분배 등)
-  registry.register('energyNextTurn', (ctx) => {
-    ctx.caster.energyNextTurn = (ctx.caster.energyNextTurn || 0) + ctx.effect.value;
-  });
-
-  // 이번 턴 추출 발동마다 에너지 +1 버프 설치 (무한 동력 수배)
-  // 중첩 안 됨 — 이미 설정된 값보다 큰 경우만 갱신
-  registry.register('setupExtractEnergy', (ctx) => {
-    ctx.caster.extractEnergyBonusLeft = Math.max(ctx.caster.extractEnergyBonusLeft || 0, ctx.effect.value);
-  });
-
-  // 남은 에너지 전소모 후 ctx.energyConsumed에 저장 (후속 이펙트에서 활용)
-  registry.register('consumeAllEnergy', (ctx) => {
-    ctx.energyConsumed = Math.max(0, ctx.caster.energy || 0);
-    ctx.caster.energy = 0;
-  });
-
-  // 턴 강제 종료
-  registry.register('forceTurnEnd', (ctx) => {
-    ctx.caster.forceEndTurn = true;
-  });
-
-  // 덱에서 조건에 맞는 카드 서치 후 패에 추가
-  // effect: {
-  //   type: 'searchByType',
-  //   cardType: 'power'|'attack'|'skill',  — 단일 타입 필터 (기존)
-  //   cardTypes: ['power','skill'],          — 복수 타입 필터
-  //   keyword: 'network',                   — 키워드 필터
-  //   value: count,                         — 서치 장수
-  //   fromTop: true,                        — 덱 맨 위(인덱스 0)부터 탐색 (기본: 무작위)
-  //   keepCost: true,                       — 코스트 변경 없음
-  //   costAdd: -1,                          — 코스트 N 감소 (최소 0)
-  //   (기본 동작: costSet 없으면 cost = 0)
-  // }
-  registry.register('searchByType', (ctx) => {
-    const { cardType, cardTypes, keyword, value: count, fromTop, keepCost, costAdd } = ctx.effect;
-    const pile = ctx.caster.drawPile;
-    let found = 0;
-    const maxFind = count || 1;
-
-    const matchFn = (card) => {
-      if (cardTypes) return cardTypes.includes(card.type);
-      if (cardType) return card.type === cardType;
-      if (keyword) return card.keywords?.includes(keyword);
-      return false;
-    };
-
-    const applyCost = (card) => {
-      if (keepCost) return;
-      if (costAdd !== undefined) card.cost = Math.max(0, (card.cost || 0) + costAdd);
-      else card.cost = 0;
-    };
-
-    if (fromTop) {
-      for (let i = 0; i < pile.length && found < maxFind; i++) {
-        if (matchFn(pile[i])) {
-          const card = pile.splice(i, 1)[0];
-          applyCost(card);
-          ctx.caster.hand.push(card);
-          found++;
-          i--;
-        }
-      }
-    } else {
-      for (let i = pile.length - 1; i >= 0 && found < maxFind; i--) {
-        if (matchFn(pile[i])) {
-          const card = pile.splice(i, 1)[0];
-          applyCost(card);
-          ctx.caster.hand.push(card);
-          found++;
-        }
-      }
-    }
-  });
-
-  // 손패에서 가장 코스트 높은 카드 1장 코스트 0 (데이터 클로닝용)
-  registry.register('zeroCostHandCard', (ctx) => {
-    const hand = ctx.caster.hand;
-    if (!hand || hand.length === 0) return;
-    let maxIdx = 0;
-    for (let i = 1; i < hand.length; i++) {
-      if ((hand[i].cost || 0) > (hand[maxIdx].cost || 0)) maxIdx = i;
-    }
-    hand[maxIdx].cost = 0;
-  });
-
-  // 덱에서 무작위 N장 공개 → 최고 코스트 1장만 패에 추가(코스트 0), 나머지는 덱 맨 위로 복귀
-  // effect: {
-  //   type: 'revealAndTakeHighestCost',
-  //   value: 3,   — 공개할 카드 수 (기본 3)
-  // }
-  registry.register('revealAndTakeHighestCost', (ctx) => {
-    const pile = ctx.caster.drawPile;
-    if (!pile || pile.length === 0) return;
-    const count = Math.min(ctx.effect.value || 3, pile.length);
-
-    // 덱에서 무작위 count개 추출 (인덱스 역순 정렬로 splice 오염 방지)
-    const available = Array.from({ length: pile.length }, (_, i) => i);
-    const chosen = [];
-    for (let i = 0; i < count; i++) {
-      const r = Math.floor(Math.random() * available.length);
-      chosen.push(available.splice(r, 1)[0]);
-    }
-    chosen.sort((a, b) => b - a);
-    const revealed = chosen.map(i => pile.splice(i, 1)[0]);
-
-    // 최고 코스트 카드 찾기
-    let maxIdx = 0;
-    for (let i = 1; i < revealed.length; i++) {
-      if ((revealed[i].cost || 0) > (revealed[maxIdx].cost || 0)) maxIdx = i;
-    }
-
-    // 최고 코스트 카드 → 패에 코스트 0으로 추가
-    const taken = revealed.splice(maxIdx, 1)[0];
-    taken.cost = 0;
-    ctx.caster.hand.push(taken);
-
-    // 나머지 → 덱 맨 위로 복귀
-    pile.unshift(...revealed);
-  });
-
-  // 덱에서 가장 코스트 높은 카드 N장 서치 + 코스트 0 (마스터 오버라이드 등)
-  registry.register('searchHighestCostFromDeck', (ctx) => {
-    const pile = ctx.caster.drawPile;
-    if (!pile || pile.length === 0) return;
-    const count = ctx.effect.value || 1;
-    for (let i = 0; i < count && pile.length > 0; i++) {
-      let maxIdx = 0;
-      for (let j = 1; j < pile.length; j++) {
-        if ((pile[j].cost || 0) > (pile[maxIdx].cost || 0)) maxIdx = j;
-      }
-      const card = pile.splice(maxIdx, 1)[0];
-      card.cost = 0;
-      ctx.caster.hand.push(card);
-    }
-  });
-
-  registry.register('shieldBreak', (ctx) => {
-    const amount = ctx.effect.value;
-    ctx.target.shield = Math.max(0, (ctx.target.shield || 0) - amount);
-  });
-
-  // 적 방어도 전부 파괴 후 파괴량의 fraction만큼 피해 (방어막 파쇄기용)
-  // effect: { type: 'shieldBreakAllAndDamage', fraction: 0.5 }
-  registry.register('shieldBreakAllAndDamage', (ctx) => {
-    const destroyed = ctx.target.shield || 0;
-    ctx.target.shield = 0;
-    const dmg = Math.floor(destroyed * (ctx.effect.fraction ?? 0.5));
-    if (dmg > 0 && ctx.engine) ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-  });
-
-  // 손패 모든 공격 카드 코스트 1 감소 (최소 0) (광역 전술 지시용)
-  registry.register('costReduceAttackCards', (ctx) => {
-    for (const card of (ctx.caster.hand || [])) {
-      if (card.type === 'attack') card.cost = Math.max(0, (card.cost || 0) - 1);
-    }
-  });
-
-  // ─── 상태이상 ───
-  // modifyStat: 캐스터/타겟의 임의 스탯을 value만큼 증감
-  //   stat: 'strength' | 'weakness' | 'overload' | ...
-  //   target: 'self'(기본=캐스터) | 'enemy'(타겟)
-  registry.register('modifyStat', (ctx) => {
-    const entity = ctx.effect.target === 'enemy' ? ctx.target : ctx.caster;
-    entity[ctx.effect.stat] = (entity[ctx.effect.stat] || 0) + ctx.effect.value;
-  });
-
-  // 자주 쓰이는 alias — cards.js에서 간결하게 사용 가능
-  registry.register('strength', (ctx) => {
-    ctx.caster.strength = (ctx.caster.strength || 0) + ctx.effect.value;
-  });
-  registry.register('weakness', (ctx) => {
-    ctx.target.weakness = (ctx.target.weakness || 0) + ctx.effect.value;
-  });
-
-  // ─── 자신에게 약화 (B형식 스케일링) ───
-  registry.register('scaledSelfWeakness', (ctx) => {
-    const scaling = ctx.effect.scaling;
-    const amount = Math.floor((ctx.effect.value || 0) + (ctx.caster[scaling.source] || 0) * (scaling.multiplier || 1));
-    ctx.caster.weakness = (ctx.caster.weakness || 0) + amount;
-  });
-
-  // ─── 자해 ───
-  registry.register('selfDamage', (ctx) => {
-    applySelfDamage(ctx.caster, demeritOcVal(ctx));
-  });
-
-  // ─── 스케일링 자해 % (base% + 스택 × multiplier% of maxHp) ───
-  registry.register('scaledSelfDamagePercent', (ctx) => {
-    const scaling = ctx.effect.scaling;
-    const pct = (ctx.effect.value || 0) + demeritStacks(ctx, scaling.source) * (scaling.multiplier || 1);
-    applySelfDamage(ctx.caster, ctx.caster.maxHp * (pct / 100));
-  });
-
-  // ─── 스케일링 드로우 (base + 스택 × multiplier) ───
-  registry.register('scaledDraw', (ctx) => {
-    const scaling = ctx.effect.scaling;
-    const count = Math.floor((ctx.effect.value || 0) + (ctx.caster[scaling.source] || 0) * (scaling.multiplier || 1));
-    for (let i = 0; i < count; i++) {
-      ctx.engine.drawCard(ctx.caster);
-    }
-  });
-
-  // ─── 스케일링 자해 (base + 오버클럭 스택 × multiplier) ───
-  registry.register('scaledSelfDamage', (ctx) => {
-    const scaling = ctx.effect.scaling;
-    const amount = (ctx.effect.value || 0) + demeritStacks(ctx, scaling.source) * (scaling.multiplier || 1);
-    applySelfDamage(ctx.caster, amount);
-  });
-
-  // 최대 체력 비율 자해 (value = %, 예: 20 → 최대 체력의 20%)
-  registry.register('selfDamagePercent', (ctx) => {
-    applySelfDamage(ctx.caster, ctx.caster.maxHp * (ctx.effect.value / 100));
-  });
-
-  // ─── 과부하 ───
-  registry.register('overload', (ctx) => {
-    let amount = ctx.effect.value || 0;
-    if (ctx.effect.scaling) {
-      // base + stacks × multiplier 형식 (영구 기관 코어 고정값 적용)
-      amount += demeritStacks(ctx, ctx.effect.scaling.source) * (ctx.effect.scaling.multiplier || 1);
-    } else if (ctx.effect.overclockScale) {
-      amount = Math.floor(demeritOcVal(ctx));
-    }
-    ctx.caster.overloadNext = (ctx.caster.overloadNext || 0) + Math.floor(amount);
-  });
-
-  registry.register('overloadReduce', (ctx) => {
-    ctx.caster.overloadNext = Math.max(0, (ctx.caster.overloadNext || 0) - (ctx.effect.value || 1));
-  });
-
-  // 다음 카드 자해 면제 (오버클럭 threshold 이상일 때 플래그 설정)
-  registry.register('preventSelfDamageIfOverclock', (ctx) => {
-    const threshold = ctx.effect.threshold || 1;
-    if ((ctx.caster.overclockStacks || 0) >= threshold) {
-      ctx.caster.preventNextCardSelfDamage = true;
-    }
-  });
-
-  // ─── 적 에너지 감소 (다음 턴) ───
-  registry.register('energyDrain', (ctx) => {
-    ctx.target.energyDrainNext = (ctx.target.energyDrainNext || 0) + (ctx.effect.value || 1);
-  });
-
-  // ─── 오버클럭 스택 ───
-  registry.register('overclockGain', (ctx) => {
-    ctx.caster.overclockStacks = Math.min(
-      (ctx.caster.overclockStacks || 0) + ctx.effect.value,
-      ctx.caster.overclockMax || 4
-    );
-  });
-
-  registry.register('overclockConsume', (ctx) => {
-    const consumed = ctx.caster.overclockStacks || 0;
-    ctx.caster.overclockStacks = 0;
-    // consumed 값을 컨텍스트에 저장해 후속 이펙트에서 사용
-    ctx.overclockConsumed = consumed;
-    // 오버드라이브 코어: 소모된 스택 수만큼 패의 해당 카드 코스트 감소
-    if (consumed > 0 && ctx.engine) {
-      ctx.engine._reduceOverdriveCost(ctx.caster, consumed);
-    }
-  });
-
-  registry.register('overclockReduce', (ctx) => {
-    const before = ctx.caster.overclockStacks || 0;
-    ctx.caster.overclockStacks = Math.max(0, before - ctx.effect.value);
-    const actualReduced = before - ctx.caster.overclockStacks;
-    // 오버드라이브 코어: 감소된 스택 수만큼 패의 해당 카드 코스트 감소
-    if (actualReduced > 0 && ctx.engine) {
-      ctx.engine._reduceOverdriveCost(ctx.caster, actualReduced);
-    }
-  });
-
-  // 과전류 조건부 (threshold check는 카드 레벨에서 처리)
-  registry.register('overcurrent', (ctx) => {
-    // 이미 조건 체크된 후 호출됨 — 메인 이펙트 실행
-    if (ctx.effect.effects) {
-      for (const subEffect of ctx.effect.effects) {
-        registry.execute(subEffect.type, { ...ctx, effect: subEffect });
-      }
-    }
-  });
-
-  // ─── 오버클럭 리셋 (전량 소모 후 0으로 초기화) ───
-  registry.register('overclockReset', (ctx) => {
-    const before = ctx.caster.overclockStacks || 0;
-    ctx.caster.overclockStacks = 0;
-    // 오버드라이브 코어: 리셋된 스택 수만큼 패의 해당 카드 코스트 감소
-    if (before > 0 && ctx.engine) {
-      ctx.engine._reduceOverdriveCost(ctx.caster, before);
-    }
-  });
-
-  // ─── 오버드라이브 코어 코스트 감소 (패시브 마커) ───
-  registry.register('costReductionPerOverclock', (ctx) => {
-    // 실제 코스트 감소는 overclockConsume/Reduce/Reset 시점에서 처리됨
-    // 이 핸들러는 카드 플레이 시 호출되지만 추가 액션 불필요
-  });
-
-  // 에너지 획득형 해체: 코스트 높고 가치 낮은 카드 선택 해체 → 본래 비용(_oldCost || cost)만큼 에너지 + 드로우 1
-  registry.register('dismantleForEnergy', (ctx) => {
-    const hand = ctx.caster.hand;
-    if (!hand || hand.length === 0) return;
-    const log = ctx.usageLog || ctx.state?.cardUsageLog;
-    const idx = ctx.engine._findHighCostLowValueCard(hand);
-    const card = hand.splice(idx, 1)[0];
-    if (!card) return;
-
-    const energyGain = card._oldCost ?? card.cost ?? 0;
-    ctx.caster.void = ctx.caster.void || [];
-    ctx.caster.void.push(card);
-    ctx.caster.dismantledThisTurn = (ctx.caster.dismantledThisTurn || 0) + 1;
-    ctx.caster.dismantledThisBattle = (ctx.caster.dismantledThisBattle || 0) + 1;
-    ctx.caster.lastDismantledCardType = card.type;
-    ctx.caster.energy = (ctx.caster.energy || 0) + energyGain;
-    if (ctx.engine) ctx.engine.drawCard(ctx.caster);
-    if (log) log.push({ type: 'dismantle', source: ctx.card?.name, cardName: card.name, effect: `에너지 +${energyGain}, 드로우 1` });
-  });
-
-  // ─── 해체 ───
-  registry.register('dismantle', (ctx) => {
-    const count = Math.floor(ocVal(ctx)) || 1;
-    const random = ctx.effect.random !== false; // 기본 무작위
-    for (let i = 0; i < count; i++) {
-      ctx.engine.dismantleCard(ctx.caster, random, `Card Effect: ${ctx.card?.name}`, ctx.usageLog || ctx.state?.cardUsageLog);
-    }
-  });
-
-  // ─── 덱 위 N장 해체 ───
-  registry.register('dismantleTop', (ctx) => {
-    const count = ctx.effect.value || 1;
-    const log = ctx.usageLog || ctx.state?.cardUsageLog;
-    for (let i = 0; i < count; i++) {
-      if (!ctx.caster.drawPile || ctx.caster.drawPile.length === 0) break;
-      const card = ctx.caster.drawPile.shift();
-      ctx.caster.void.push(card);
-      ctx.caster.dismantledThisTurn = (ctx.caster.dismantledThisTurn || 0) + 1;
-      ctx.caster.dismantledThisBattle = (ctx.caster.dismantledThisBattle || 0) + 1;
-      if (log) log.push({ type: 'dismantle', source: `Card Effect: ${ctx.card?.name}`, cardName: card.name });
-    }
-  });
-
-  // ─── 해체된 카드 타입 조건부 (attack/skill/power 분기) ───
-  registry.register('conditionalByDismantledType', (ctx) => {
-    const dismantledType = ctx.caster.lastDismantledCardType;
-    if (!dismantledType) return;
-    const effects = ctx.effect[dismantledType] || [];
-    for (const subEffect of effects) {
-      registry.execute(subEffect.type, { ...ctx, effect: subEffect });
-    }
-  });
-
-  // ─── 추출 (트리거 — 해체 시 발동) ───
-  registry.register('extract', (ctx) => {
-    // 추출 효과는 dismantleCard 내부에서 트리거됨
-    if (ctx.effect.effects) {
-      for (const subEffect of ctx.effect.effects) {
-        registry.execute(subEffect.type, { ...ctx, effect: subEffect });
-      }
-    }
-  });
-
-  // ─── 재구축 ───
-  registry.register('rebuild', (ctx) => {
-    // 카드 사용 후 소멸 대신 핸드로 복귀시키는 처리는 engine.playCard 에서 수행.
-    // 여기서는 명시적 이펙트로 호출될 때(가비지 콜렉터 등) 추가적인 로직이나 로그, 재구축 관련 파워 발동 처리
-  });
-
-  // ─── 최대체력 감소 ───
-  registry.register('maxHpReduce', (ctx) => {
-    ctx.caster.maxHp = Math.max(1, ctx.caster.maxHp - Math.floor(ocVal(ctx)));
-    if (ctx.caster.hp > ctx.caster.maxHp) {
-      ctx.caster.hp = ctx.caster.maxHp;
-    }
-  });
-
-  // ─── 스케일링 최대 체력 감소 (scaledDamage와 동일한 구조) ───
-  registry.register('scaledMaxHpReduce', (ctx) => {
-    const scaling = ctx.effect.scaling;
-    let amount = (ctx.effect.value || 0) + (ctx.caster[scaling.source] || 0) * (scaling.multiplier || 1);
-    amount = Math.floor(amount);
-    ctx.caster.maxHp = Math.max(1, ctx.caster.maxHp - amount);
-    if (ctx.caster.hp > ctx.caster.maxHp) {
-      ctx.caster.hp = ctx.caster.maxHp;
-    }
-  });
-
-  // ─── 조건부 이펙트 ───
-  registry.register('conditional', (ctx) => {
-    const { condition, thenEffects, elseEffects } = ctx.effect;
-    let condMet = false;
-
+export function evaluateCondition(condition, ctx) {
+    const c = ctx.caster, t = ctx.target, value = condition.value ?? 0;
     switch (condition.type) {
-      case 'hpBelow':
-        condMet = ctx.caster.hp <= ctx.caster.maxHp * (condition.value / 100);
-        break;
-      case 'overclockMin':
-        condMet = (ctx.caster.overclockStacks || 0) >= condition.value;
-        break;
-      case 'dismantledThisTurn':
-        condMet = (ctx.caster.dismantledThisTurn || 0) >= condition.value;
-        break;
-      case 'dismantledThisBattle':
-        condMet = (ctx.caster.dismantledThisBattle || 0) >= condition.value;
-        break;
-      case 'targetHpBelow':
-        condMet = ctx.target.hp <= ctx.target.maxHp * (condition.value / 100);
-        break;
-      case 'networkCardsPlayed':
-        condMet = (ctx.caster.networkCardsPlayedThisTurn || 0) >= condition.value;
-        break;
-      case 'cardsPlayedThisTurn':
-        condMet = (ctx.caster.cardsPlayedThisTurn || 0) >= condition.value;
-        break;
-      case 'enemyHasWeakness':
-        condMet = (ctx.target.weakness || 0) > 0;
-        break;
-      case 'accumulationMet':
-        condMet = (ctx.card.accumulationStack || 0) >= (ctx.card.accumulationTarget || 0);
-        break;
-      default:
-        break;
+        case 'hpBelow': return c.hp <= c.maxHp * value / 100;
+        case 'hpAbove': return c.hp >= c.maxHp * value / 100;
+        case 'targetHpBelow': return t.hp <= t.maxHp * value / 100;
+        case 'overclockMin': return n(c, 'overclockStacks') >= Math.trunc(value);
+        case 'virusMin': case 'virusTarget': return n(t, 'virus') >= Math.trunc(value);
+        case 'virusAppliedThisTurnMin': return tv(t, 'virusAppliedThisTurn') >= Math.trunc(value);
+        case 'corrosionMin': return n(t, 'corrosion') >= Math.trunc(value);
+        case 'shieldZero': return n(t, 'shield') === 0;
+        case 'cardsPlayedThisTurn': return tv(c, 'cardsPlayedThisTurn') >= Math.trunc(value);
+        case 'networkCardsPlayed': return tv(c, 'networkCardsPlayedThisTurn') >= Math.trunc(value);
+        case 'dismantledThisTurn': return tv(c, 'dismantledThisTurn') >= Math.trunc(value);
+        case 'dismantledThisBattle': return n(c, 'dismantledThisBattle') >= Math.trunc(value);
+        case 'handEmpty': return c.hand.length === 0;
+        case 'enemyHasWeakness': return n(t, 'weakness') > 0;
+        case 'luckMin': return n(c, 'luck') >= Math.trunc(value);
+        case 'consecutiveLuckMin': return n(c, 'consecutiveLuck') >= Math.trunc(value);
+        case 'nonBaseCardsInHand': return c.hand.filter(card => card.pack !== 'base').length >= Math.trunc(value);
+        case 'gambleSuccessThisTurn': return tv(c, 'gambleSuccessThisTurn') >= Math.trunc(value);
+        case 'corrosionTarget': return n(t, 'corrosion') > 0;
+        case 'accumulationMet': return ctx.card != null && (ctx.card.accumulationCount ?? 0) >= (ctx.card.accumulationTarget ?? 0);
+        case 'accumulation': return ctx.card != null && (ctx.card.accumulationCount ?? 0) >= Math.trunc(value);
+        default: console.warn(`[EffectRegistry] Unregistered condition: ${condition.type}`); return false;
     }
-
-    const effects = condMet ? thenEffects : (elseEffects || []);
-    for (const subEffect of effects) {
-      registry.execute(subEffect.type, { ...ctx, effect: subEffect });
-    }
-  });
-
-  // ─── 스케일링 이펙트 (값이 다른 수치에 비례) ───
-  registry.register('scaledDamage', (ctx) => {
-    let base = ocVal(ctx) || 0;  // overclockScale 적용 가능한 base
-    const scaling = ctx.effect.scaling;
-    // scaling.multiplier도 overclockScale 대상일 수 있음 (overclockScaleMultiplier: true)
-    const mult = (scaling.overclockScaleMultiplier && ctx.overclockScale > 0)
-      ? (scaling.multiplier || 1) * ctx.overclockScale
-      : (scaling.multiplier || 1);
-
-    switch (scaling.source) {
-      case 'selfDamageThisTurn':
-        base += (ctx.caster.selfDamageThisTurn || 0) * mult;
-        break;
-      case 'overclockConsumed':
-        base += (ctx.overclockConsumed || 0) * mult;
-        break;
-      case 'dismantledThisBattle':
-        base += (ctx.caster.dismantledThisBattle || 0) * mult;
-        break;
-      case 'overloadStacks':
-        base += (ctx.caster.overloadNext || 0) * mult;
-        break;
-      case 'targetLostHp': {
-        const lost = ctx.target.maxHp - ctx.target.hp;
-        const dynMult = scaling.stackScaling
-          ? mult + (ctx.caster.overclockStacks || 0) * scaling.stackScaling
-          : mult;
-        base += Math.min(lost * dynMult, scaling.max || 999);
-        break;
-      }
-      case 'networkStacks':
-        base += (ctx.caster.networkStacks || 0) * mult;
-        break;
-      case 'overclockStacks':
-        base += (ctx.caster.overclockStacks || 0) * mult;
-        break;
-      case 'totalDamageThisTurn':
-        base += (ctx.caster.totalDamageThisTurn || 0) * mult;
-        break;
-      default: break;
-    }
-
-    // 힘/약화: 카드당 1회만 적용
-    const applyStr = !ctx._dmgFlags?.strengthApplied;
-    let dmg = applyStr ? base + (ctx.caster.strength || 0) : base;
-    // 네트워크 퍼마넌트 버프
-    if (ctx.card?.keywords?.includes('network') && ctx.caster.networkDamageBuff) {
-      dmg += ctx.caster.networkDamageBuff;
-    }
-    if (applyStr) {
-      dmg -= (ctx.caster.weakness || 0);
-      if (ctx._dmgFlags) ctx._dmgFlags.strengthApplied = true;
-    }
-    if (dmg < 1) dmg = 1;
-    ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-  });
-
-  // ─── 스케일링 방어도 ───
-  registry.register('scaledShield', (ctx) => {
-    let base = ctx.effect.value || 0;
-    const scaling = ctx.effect.scaling;
-
-    switch (scaling.source) {
-      case 'overclockConsumed':
-        base += (ctx.overclockConsumed || 0) * (scaling.multiplier || 1);
-        break;
-      case 'dismantledCount':
-        base += (ctx.caster.dismantledThisTurn || 0) * (scaling.multiplier || 1);
-        break;
-      case 'networkStacks':
-        base += (ctx.caster.networkStacks || 0) * (scaling.multiplier || 1);
-        break;
-      case 'targetVirus':
-        base += Math.floor((ctx.target.virus || 0) * (scaling.multiplier || 1));
-        break;
-      case 'energyConsumed':
-        base += (ctx.energyConsumed || 0) * (scaling.multiplier || 1);
-        break;
-      default: break;
-    }
-    // 네트워크 퍼마넌트 버프
-    if (ctx.card?.keywords?.includes('network') && ctx.caster.networkShieldBuff) {
-      base += ctx.caster.networkShieldBuff;
-    }
-    ctx.caster.shield = (ctx.caster.shield || 0) + base;
-  });
-  // 바이러스 디버프 (적 공격력 향후 연계/소모용 화폐)
-  registry.register('virus', (ctx) => {
-    ctx.target.virus = (ctx.target.virus || 0) + ctx.effect.value;
-
-    // 전염병 연구소 파워 체크 (바이러스 부여 시 +1)
-    if (ctx.engine.hasPower(ctx.caster, 'viral_lab')) {
-      ctx.target.virus += 1;
-    }
-  });
-
-  // 바이러스 2배 증가
-  registry.register('doubleVirus', (ctx) => {
-    ctx.target.virus = (ctx.target.virus || 0) * 2;
-  });
-
-  // 부식 디버프 (턴 시작시 방어도부터 깎는 DoT)
-  registry.register('corrosion', (ctx) => {
-    // 대상 지정인지, 자신인지 확인
-    let target = ctx.target;
-    if (ctx.effect.target === 'self') target = ctx.caster;
-    target.corrosion = (target.corrosion || 0) + ctx.effect.value;
-  });
-
-  // ─── 바이러스 소모 통합 핸들러 (consumeVirus) ───
-  // 파라미터:
-  //   consume: 'all' | 'scaled' | number  — 소모량 결정
-  //   max: number                         — consume='scaled' 시 최대 소모량
-  //   threshold: number                   — 발동에 필요한 최소 바이러스 (미지정 시 consume 값 사용)
-  //   multiplier: number                  — 소모량 × multiplier 만큼 피해
-  //   shield: number                      — 고정 방어도 획득
-  //   shieldPerStack: number              — 소모 스택 1당 방어도
-  //   draw: number                        — 카드 드로우
-  //   energy: number                      — 에너지 획득
-  //   heal: number                        — 체력 회복
-  //   strength: number                    — 힘 획득
-  //   applyCorrosionRatio: number         — 소모량 × ratio 만큼 부식 부여
-  //   thenEffects: []                     — 소모 성공 시 실행할 서브이펙트
-  registry.register('consumeVirus', (ctx) => {
-    const virusCount = ctx.target.virus || 0;
-    const eff = ctx.effect;
-
-    // 1) 소모량 결정
-    let consumeAmount;
-    const consumeValue = eff.consume !== undefined ? eff.consume : eff.value;
-    if (consumeValue === 'all') {
-      consumeAmount = virusCount;
-    } else if (consumeValue === 'scaled') {
-      consumeAmount = Math.min(virusCount, eff.max || 15);
-    } else {
-      consumeAmount = Math.min(virusCount, Number(consumeValue) || 0);
-    }
-
-    // 2) 발동 조건 체크
-    const threshold = eff.threshold !== undefined ? eff.threshold : consumeAmount;
-    if (virusCount < threshold) return;
-    if (consumeAmount <= 0 && !eff.draw && !eff.energy && !eff.shield && !eff.heal && !eff.strength) return;
-
-    // 3) 소모
-    if (consumeAmount > 0) {
-      ctx.target.virus -= consumeAmount;
-    }
-
-    // 4) 효과 발동
-    if (eff.multiplier) {
-      const dmg = consumeAmount * eff.multiplier;
-      ctx.engine.applyDamage(ctx.target, dmg, ctx.caster, true);
-    }
-    if (eff.shieldPerStack) {
-      ctx.caster.shield = (ctx.caster.shield || 0) + consumeAmount * eff.shieldPerStack;
-    }
-    if (eff.shield) ctx.caster.shield = (ctx.caster.shield || 0) + eff.shield;
-    if (eff.draw) ctx.engine._drawCards(ctx.caster, eff.draw);
-    if (eff.energy) ctx.caster.energy = Math.min((ctx.caster.energy || 0) + eff.energy, ctx.caster.maxEnergyPool || 10);
-    if (eff.heal) ctx.engine.heal(ctx.caster, eff.heal);
-    if (eff.strength) ctx.caster.strength = (ctx.caster.strength || 0) + eff.strength;
-    if (eff.applyCorrosionRatio) {
-      const corr = Math.floor(consumeAmount * eff.applyCorrosionRatio);
-      if (corr > 0) ctx.target.corrosion = (ctx.target.corrosion || 0) + corr;
-    }
-
-    // 5) thenEffects (서브이펙트 재귀 실행)
-    if (eff.thenEffects) {
-      for (const subEffect of eff.thenEffects) {
-        // scaled 값 → 소모량 기반으로 실제 수치 치환
-        let resolved = subEffect;
-        if (subEffect.value === 'scaled') {
-          const val = Math.min(
-            Math.floor(consumeAmount * (subEffect.factor || 1)),
-            subEffect.max || Infinity
-          );
-          resolved = { ...subEffect, value: val };
-        }
-        registry.execute(resolved.type, { ...ctx, effect: resolved, overdriveConsumed: consumeAmount });
-      }
-    }
-
-    // 6) 파워 트리거
-    if (consumeAmount > 0) {
-      ctx.engine._triggerVirusConsumePowers(ctx.caster, consumeAmount);
-    }
-  });
-
-  // 하위 호환 alias — 기존 이름으로도 동작
-  registry.register('consumeVirusForDamage', (ctx) => registry.execute('consumeVirus', ctx));
-  registry.register('consumeVirusForUtility', (ctx) => registry.execute('consumeVirus', ctx));
-  registry.register('overdrive', (ctx) => registry.execute('consumeVirus', ctx));
-
-  // 3. 적 부식/바이러스 비례 피해 (부식 1당 피해, 네크로시스, 오메가 변이 등)
-  registry.register('damageByDebuff', (ctx) => {
-    let stack = 0;
-    if (ctx.effect.debuff === 'corrosion') stack = ctx.target.corrosion || 0;
-    else if (ctx.effect.debuff === 'virus') stack = ctx.target.virus || 0;
-
-    if (stack > 0) {
-      let dmg = stack * ctx.effect.multiplier;
-      ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-    }
-  });
-
-  // 4-a. 디버프 스택 비례 바이러스 부여 (보균자 역류: 부식 스택 1당 바이러스 1)
-  registry.register('virusByDebuff', (ctx) => {
-    let stack = 0;
-    if (ctx.effect.debuff === 'corrosion') stack = ctx.target.corrosion || 0;
-    else if (ctx.effect.debuff === 'virus') stack = ctx.target.virus || 0;
-    if (stack > 0) {
-      const amount = Math.floor(stack * (ctx.effect.multiplier || 1));
-      ctx.target.virus = (ctx.target.virus || 0) + amount;
-      if (ctx.engine.hasPower(ctx.caster, 'viral_lab')) {
-        ctx.target.virus += 1;
-      }
-    }
-  });
-
-  // 4. 용해성 맹독 전용 (폭주(6) 기준)
-  registry.register('meltToxin', (ctx) => {
-    if ((ctx.target.virus || 0) >= 6) {
-      ctx.target.virus -= 6;
-      if (ctx.engine) ctx.engine.applyDamage(ctx.target, 10, ctx.caster); // 10 피해
-      ctx.target.weakness = (ctx.target.weakness || 0) + 2; // 약화 2
-      ctx.target.corrosion = (ctx.target.corrosion || 0) + 5; // 부식 5 부여
-      ctx.engine._triggerVirusConsumePowers(ctx.caster, 6);
-    }
-  });
-
-  // 5. 조건부 스킬/공격 (숙주 기생, 부식 침투탄, 괴사 침식, 세포 용해 폭탄)
-  registry.register('conditionalAdd', (ctx) => {
-    let pass = false;
-    if (ctx.effect.condition === 'virusTarget' && (ctx.target.virus || 0) >= ctx.effect.conditionValue) pass = true;
-    if (ctx.effect.condition === 'targetShieldZero' && (ctx.target.shield || 0) === 0) pass = true;
-    if (ctx.effect.condition === 'corrosionTarget' && (ctx.target.corrosion || 0) >= ctx.effect.conditionValue) pass = true;
-
-    if (pass) {
-      if (ctx.effect.addDamage) {
-        let dmg = ctx.effect.addDamage + (ctx.caster.strength || 0) - (ctx.caster.weakness || 0);
-        if (dmg < 1) dmg = 1;
-        ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-      }
-      if (ctx.effect.addVirus) ctx.target.virus = (ctx.target.virus || 0) + ctx.effect.addVirus;
-      if (ctx.effect.destroyShield) ctx.target.shield = 0;
-      if (ctx.effect.consumeCorrosion) ctx.target.corrosion = 0;
-      if (ctx.effect.setStrengthZero) ctx.target.strength = 0;
-      if (ctx.effect.halveStrength) ctx.target.strength = Math.floor((ctx.target.strength || 0) / 2);
-    }
-  });
-
-  // 하위 호환 alias — consumeVirusForShieldScale
-  registry.register('consumeVirusForShieldScale', (ctx) => registry.execute('consumeVirus', ctx));
-
-  // 소모 스택당 방어도 (thenEffects 내부에서 overdriveConsumed로 참조)
-  registry.register('shieldPerStack', (ctx) => {
-    const consumed = ctx.overdriveConsumed || 0;
-    ctx.caster.shield = (ctx.caster.shield || 0) + consumed * (ctx.effect.value || 3);
-  });
-  // 하위 호환 alias
-  registry.register('shieldPerOverdrive', (ctx) => registry.execute('shieldPerStack', ctx));
-
-  // 메모리 최적화 — 패 전체 해체 후 해체 수만큼 드로우
-  registry.register('dismantleAllAndScaleDraw', (ctx) => {
-    const handSize = ctx.caster.hand.length;
-    for (let i = handSize - 1; i >= 0; i--) {
-      ctx.engine.dismantleCard(ctx.caster, false, '메모리 최적화', ctx.state?.cardUsageLog);
-    }
-    for (let i = 0; i < handSize; i++) {
-      ctx.engine.drawCard(ctx.caster);
-    }
-  });
-
-  // 시스템 롤백 — 패 전체 해체 후 void 최근 N장 임시 회수 (턴 종료 시 영구 소멸)
-  registry.register('dismantleAllAndVoidRecall', (ctx) => {
-    const log = ctx.state?.cardUsageLog;
-    const handSize = ctx.caster.hand.length;
-    for (let i = handSize - 1; i >= 0; i--) {
-      ctx.engine.dismantleCard(ctx.caster, false, '시스템 롤백', log);
-    }
-    const voidPile = ctx.caster.void || [];
-    const recallCount = Math.min(ctx.effect.recallCount || 4, voidPile.length);
-    for (let i = 0; i < recallCount; i++) {
-      const card = voidPile.pop();
-      card._tempCard = true;
-      ctx.caster.hand.push(card);
-      if (log) log.push({ type: 'info', msg: `시스템 롤백: ${card.name} 임시 회수` });
-    }
-  });
-
-  // 8. 강제 데이터 덤프 — 패 전체 해체 후 해체 수 × 방어도
-  registry.register('dismantleAllAndScaleShield', (ctx) => {
-    const handSize = ctx.caster.hand.length;
-    const multiplier = ctx.effect.multiplier || 10;
-    for (let i = handSize - 1; i >= 0; i--) {
-      ctx.engine.dismantleCard(ctx.caster, false, '강제 데이터 덤프', ctx.state?.cardUsageLog);
-    }
-    ctx.caster.shield = (ctx.caster.shield || 0) + handSize * multiplier;
-  });
-
-  // 스레드 동기화 — 최고/최저 코스트 카드 해체 후 코스트 합계 × n 피해
-  registry.register('threadSync', (ctx) => {
-    const hand = ctx.caster.hand;
-    if (hand.length === 0) return;
-
-    // 가장 높은 코스트 카드와 가장 낮은 코스트 카드 찾기
-    let highIdx = 0, lowIdx = 0;
-    for (let i = 1; i < hand.length; i++) {
-      if (hand[i].cost > hand[highIdx].cost) highIdx = i;
-      if (hand[i].cost < hand[lowIdx].cost) lowIdx = i;
-    }
-
-    const highCost = hand[highIdx].cost;
-    const lowCost = hand[lowIdx].cost;
-    const costSum = highCost + lowCost;
-    const log = ctx.state?.cardUsageLog;
-
-    // 높은 인덱스부터 제거해야 낮은 인덱스가 밀리지 않음
-    if (highIdx !== lowIdx) {
-      const first = Math.max(highIdx, lowIdx);
-      const second = Math.min(highIdx, lowIdx);
-      ctx.engine.dismantleCardAt(ctx.caster, first, '스레드 동기화', log);
-      ctx.engine.dismantleCardAt(ctx.caster, second, '스레드 동기화', log);
-    } else {
-      ctx.engine.dismantleCardAt(ctx.caster, highIdx, '스레드 동기화', log);
-    }
-
-    // 코스트 합계 × n 피해
-    const n = ctx.caster.networkStacks || 0;
-    const dmg = costSum * n;
-    if (dmg > 0) {
-      ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-    }
-  });
-
-  // 방어도 무시 (플래그 설정 - 다음 데미지 이펙트에서 참조)
-  registry.register('armorPierce', (ctx) => {
-    ctx._armorPierce = true;
-  });
-
-  // 프로토콜 우회 (다음 N장 프로토콜 자동 충족)
-  registry.register('protocolBypass', (ctx) => {
-    ctx.caster.protocolBypassCount = (ctx.caster.protocolBypassCount || 0) + ctx.effect.value;
-  });
-
-  // ─── 러시안 룰렛 전용 이펙트 ───
-  // 도박 핵심 메커니즘
-  registry.register('gamble', (ctx) => {
-    let chance = ctx.effect.chance !== undefined ? ctx.effect.chance : 50;
-    ctx.caster.gambleChanceSumThisTurn = (ctx.caster.gambleChanceSumThisTurn || 0) + chance;
-    const bonus = (ctx.caster.luck || 0) + (ctx.caster.gambleBonusChance || 0);
-    chance += bonus;
-    const rolled = Math.random() * 100;
-    const success = rolled < chance;
-    if (success) {
-      if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `[도박성공] ${chance}% (Roll: ${rolled.toFixed(1)})` });
-      ctx.caster.luckyThisTurn = (ctx.caster.luckyThisTurn || 0) + 1;
-      ctx.caster.luckyThisBattle = (ctx.caster.luckyThisBattle || 0) + 1;
-      ctx.caster.consecutiveLuck = (ctx.caster.consecutiveLuck || 0) + 1;
-      // 운명의 룰렛 지배자(40번 파워)
-      if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'rouletteMaster')) {
-        gainLuck(ctx.caster, 2, ctx.state?.cardUsageLog);
-        if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `룰렛 지배자: 행운 발생으로 행운 스택 +2` });
-      }
-      // 포춘 테이블(30번 파워): 행운 시 33% 확률로 드로우
-      if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'drawOnLuckyChance')) {
-        if (Math.random() < 0.33 && ctx.engine) {
-          ctx.engine.drawCard(ctx.caster);
-          if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `포춘 테이블: 행운 발동 → 카드 1장 드로우` });
-        }
-      }
-      // 럭키 세븐(20번 파워): 매 턴 첫 행운 시 행운 스택 +1, 에너지 +1
-      if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'energyOnFirstLuck')) {
-        if (ctx.caster.luckyThisTurn === 1) {
-          gainLuck(ctx.caster, 1, ctx.state?.cardUsageLog);
-          ctx.caster.energy = (ctx.caster.energy || 0) + 1;
-          if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `럭키 세븐: 첫 행운 → 행운 스택 +1, 에너지 +1` });
-        }
-      }
-      if (ctx.effect.thenEffects) {
-        for (const eff of ctx.effect.thenEffects) registry.execute(eff.type, { ...ctx, effect: eff });
-      }
-    } else {
-      if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `[도박실패] ${chance}% (Roll: ${rolled.toFixed(1)})` });
-      ctx.caster.unluckyThisTurn = (ctx.caster.unluckyThisTurn || 0) + 1;
-      ctx.caster.unluckyThisBattle = (ctx.caster.unluckyThisBattle || 0) + 1;
-      ctx.caster.consecutiveLuck = 0;
-      // 운명의 룰렛 지배자(40번 파워)
-      if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'rouletteMaster')) {
-        const cost = ctx.card?.cost || 0;
-        gainLuck(ctx.caster, cost, ctx.state?.cardUsageLog);
-        if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `룰렛 지배자: 불운 카드 코스트(${cost})만큼 행운 획득` });
-      }
-      if (!ctx.caster.ignoreUnluck && ctx.effect.elseEffects) {
-        for (const eff of ctx.effect.elseEffects) registry.execute(eff.type, { ...ctx, effect: eff });
-      }
-      // 운수 좋은 날(25번 스킬): 불운 시 해당 도박 카드 한 번 재시전 (무한루프 방지: _isRetry)
-      if (ctx.caster.retryOnUnluck && !ctx._isRetry) {
-        if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `운수 좋은 날: 불운 발생 → 재시전` });
-        registry.execute('gamble', { ...ctx, _isRetry: true });
-      }
-    }
-  });
-
-  // 러시안 룰렛 반복 도박 (최대 shots회, 각 회마다 생존 or 총알)
-  registry.register('russianRoulette', (ctx) => {
-    const maxShots = ctx.effect.shots || 6;
-    const bulletChance = ctx.effect.bulletChance || 16; // 총알 맞을 확률 (불운)
-    const dmg = ctx.effect.damage || 25;
-    const surviveBase = 100 - bulletChance; // 기본 생존 확률
-
-    for (let i = 0; i < maxShots; i++) {
-      const bonus = (ctx.caster.luck || 0) + (ctx.caster.gambleBonusChance || 0);
-      const surviveChance = surviveBase + bonus;
-      const rolled = Math.random() * 100;
-      ctx.caster.gambleChanceSumThisTurn = (ctx.caster.gambleChanceSumThisTurn || 0) + surviveBase;
-
-      if (rolled < surviveChance) {
-        // 행운: 생존 + 피해
-        ctx.caster.luckyThisTurn = (ctx.caster.luckyThisTurn || 0) + 1;
-        ctx.caster.luckyThisBattle = (ctx.caster.luckyThisBattle || 0) + 1;
-        ctx.caster.consecutiveLuck = (ctx.caster.consecutiveLuck || 0) + 1;
-        if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `[룰렛 ${i + 1}발] 생존! ${dmg} 피해 (Roll: ${rolled.toFixed(1)} / 생존: ${surviveChance.toFixed(1)}%)` });
-        // 운명의 룰렛 지배자(40번 파워)
-        if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'rouletteMaster')) {
-          gainLuck(ctx.caster, 2, ctx.state?.cardUsageLog);
-          if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `룰렛 지배자: 행운 발생으로 행운 스택 +2` });
-        }
-        // 포춘 테이블(30번 파워): 행운 시 33% 확률로 드로우
-        if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'drawOnLuckyChance')) {
-          if (Math.random() < 0.33 && ctx.engine) {
-            ctx.engine.drawCard(ctx.caster);
-            if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `포춘 테이블: 행운 발동 → 카드 1장 드로우` });
-          }
-        }
-        // 럭키 세븐(20번 파워): 매 턴 첫 행운 시 행운 스택 +1, 에너지 +1
-        if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'energyOnFirstLuck')) {
-          if (ctx.caster.luckyThisTurn === 1) {
-            gainLuck(ctx.caster, 1, ctx.state?.cardUsageLog);
-            ctx.caster.energy = (ctx.caster.energy || 0) + 1;
-            if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `럭키 세븐: 첫 행운 → 행운 스택 +1, 에너지 +1` });
-          }
-        }
-        if (ctx.engine) ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-      } else {
-        // 불운: 총알 맞음 → 체력 절반 소실 후 중단
-        ctx.caster.unluckyThisTurn = (ctx.caster.unluckyThisTurn || 0) + 1;
-        ctx.caster.unluckyThisBattle = (ctx.caster.unluckyThisBattle || 0) + 1;
-        ctx.caster.consecutiveLuck = 0;
-        if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `[룰렛 ${i + 1}발] 총알 맞음! 체력 절반 소실 (Roll: ${rolled.toFixed(1)} / 생존: ${surviveChance.toFixed(1)}%)` });
-        if (ctx.caster.activePowers?.some(pw => pw.powerEffect?.type === 'rouletteMaster')) {
-          const cost = ctx.card?.cost || 0;
-          gainLuck(ctx.caster, cost, ctx.state?.cardUsageLog);
-          if (ctx.state?.cardUsageLog) ctx.state.cardUsageLog.push({ type: 'info', msg: `룰렛 지배자: 불운 카드 코스트(${cost})만큼 행운 획득` });
-        }
-        if (!ctx.caster.ignoreUnluck) {
-          ctx.caster.hp = Math.max(1, Math.floor(ctx.caster.hp * 0.5));
-        }
-        break;
-      }
-    }
-  });
-
-  // 확률론의 지배자: 행운 획득 시 힘도 동량 증가하는 헬퍼
-  const gainLuck = (caster, amount, log) => {
-    caster.luck = (caster.luck || 0) + amount;
-    if (amount > 0 && caster.activePowers?.some(pw => pw.powerEffect?.type === 'strengthPerLuck')) {
-      caster.strength = (caster.strength || 0) + amount;
-      if (log) log.push({ type: 'info', msg: `확률론의 지배자: 행운 +${amount} → 힘 +${amount}` });
-    }
-  };
-
-  // 행운 스택 추가
-  registry.register('addLuck', (ctx) => { gainLuck(ctx.caster, ctx.effect.value, ctx.state?.cardUsageLog); });
-  registry.register('doubleLuck', (ctx) => {
-    const gain = ctx.caster.luck || 0;
-    gainLuck(ctx.caster, gain, ctx.state?.cardUsageLog);
-  });
-  registry.register('loseAllLuck', (ctx) => { ctx.caster.luck = 0; });
-  // 주사위 굴려서 행운 스택 획득 (1~6)
-  registry.register('diceRollLuck', (ctx) => {
-    const roll = Math.floor(Math.random() * 6) + 1;
-    gainLuck(ctx.caster, roll, ctx.state?.cardUsageLog);
-  });
-
-  // 카드를 손패로 되돌리고 코스트 0
-  registry.register('returnToHandZeroCost', (ctx) => {
-    if (ctx.caster.void?.length > 0) { const c = ctx.caster.void.pop(); c.cost = 0; ctx.caster.hand.push(c); }
-  });
-
-  // 무작위 카드 버림
-  registry.register('discardRandom', (ctx) => {
-    if (ctx.caster.hand?.length > 0) ctx.caster.void.push(ctx.caster.hand.splice(Math.floor(Math.random() * ctx.caster.hand.length), 1)[0]);
-  });
-
-  // 이번 턴 도박 확률 보너스
-  registry.register('gambleChanceBuffThisTurn', (ctx) => { ctx.caster.gambleBonusChance = (ctx.caster.gambleBonusChance || 0) + ctx.effect.value; });
-
-  // 주사위 콤보 (1~6 방어+공격)
-  registry.register('diceRollCombo', (ctx) => {
-    const roll = Math.floor(Math.random() * 6) + 1;
-    ctx.caster.shield = (ctx.caster.shield || 0) + roll;
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, roll, ctx.caster);
-  });
-
-  // 마지막으로 드로우한 카드의 코스트 조정 (범용)
-  registry.register('adjustCostLastDrawn', (ctx) => {
-    if (ctx.caster.hand && ctx.caster.hand.length > 0) {
-      const lastCard = ctx.caster.hand[ctx.caster.hand.length - 1];
-      if (ctx.effect.set !== undefined) {
-        lastCard.cost = ctx.effect.set;
-      } else if (ctx.effect.add !== undefined) {
-        lastCard.cost = Math.max(0, (lastCard.cost || 0) + ctx.effect.add);
-      }
-    }
-  });
-
-  // 데미지 감소(불운 시 데미지 줄임) — value: 기준 데미지, scale: 배율(기본 0.5)
-  registry.register('damageNegative', (ctx) => {
-    const value = ctx.effect.value || 0;
-    const scale = ctx.effect.scale !== undefined ? ctx.effect.scale : 0.5;
-    const reduced = Math.floor(value * scale);
-    if (ctx.engine && reduced > 0) ctx.engine.applyDamage(ctx.target, reduced, ctx.caster);
-  });
-
-  // 불운 경험 시 추가 데미지
-  registry.register('damageIfUnluckyThisTurn', (ctx) => {
-    if (ctx.caster.unluckyThisTurn > 0 && ctx.engine) ctx.engine.applyDamage(ctx.target, ctx.effect.value, ctx.caster);
-  });
-
-  // 보험 가입
-  registry.register('buffInsurance', (ctx) => {
-    ctx.caster._insuranceActive = true;
-  });
-
-  // 턴 종료 시 자해
-  registry.register('selfDamageAtTurnEnd', (ctx) => {
-    applySelfDamage(ctx.caster, ctx.effect.value);
-  });
-
-  // 다음 도박 확률 증가
-  registry.register('nextGambleBonusChance', (ctx) => { ctx.caster.gambleBonusChance = (ctx.caster.gambleBonusChance || 0) + ctx.effect.value; });
-
-  // 패 전부 버림
-  registry.register('discardAll', (ctx) => {
-    while (ctx.caster.hand.length > 0) ctx.caster.void.push(ctx.caster.hand.pop());
-  });
-
-  // 체력 비율 회복
-  registry.register('healScale', (ctx) => {
-    const amt = Math.floor(ctx.caster.maxHp * ctx.effect.value);
-    ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + amt);
-  });
-
-  // HP의 N%만큼 방어도 획득 (패킷 가로채기)
-  registry.register('shieldByHpPercent', (ctx) => {
-    const amt = Math.floor(ctx.caster.maxHp * (ctx.effect.value / 100));
-    ctx.caster.shield = (ctx.caster.shield || 0) + amt;
-  });
-
-  // 손패의 모든 [네트워크] 카드 해체 후 해체 수만큼 드로우 (클라우드 덤프)
-  registry.register('dismantleNetworkAndDraw', (ctx) => {
-    const hand = ctx.caster.hand;
-    const log = ctx.state?.cardUsageLog;
-    // 뒤에서부터 제거해 인덱스 밀림 방지
-    let dismantleCount = 0;
-    for (let i = hand.length - 1; i >= 0; i--) {
-      if (hand[i].keywords?.includes('network')) {
-        ctx.engine.dismantleCardAt(ctx.caster, i, '클라우드 덤프', log);
-        dismantleCount++;
-      }
-    }
-    if (dismantleCount > 0 && ctx.engine) {
-      ctx.engine._drawCards(ctx.caster, dismantleCount, '클라우드 덤프', log);
-    }
-  });
-
-  // 손패 전부 버리고 덱에서 고코스트 순으로 N장 뽑아 코스트 1로 설정 (마스터 오버라이드)
-  registry.register('masterOverride', (ctx) => {
-    const hand = ctx.caster.hand;
-    const log = ctx.state?.cardUsageLog;
-    const discardCount = hand.length;
-    // 손패 전체를 void로
-    for (let i = hand.length - 1; i >= 0; i--) {
-      const c = hand.splice(i, 1)[0];
-      ctx.caster.void = ctx.caster.void || [];
-      ctx.caster.void.push(c);
-    }
-    if (log) log.push({ type: 'effect', source: '마스터 오버라이드', effect: `손패 ${discardCount}장 버림` });
-    // 덱에서 고코스트 순으로 정렬 후 N장 뽑기
-    const drawPile = ctx.caster.drawPile;
-    if (!drawPile || drawPile.length === 0 || discardCount === 0) return;
-    drawPile.sort((a, b) => (b.cost || 0) - (a.cost || 0));
-    const toDraw = Math.min(discardCount, drawPile.length);
-    for (let i = 0; i < toDraw; i++) {
-      const c = drawPile.shift();
-      c.cost = 1;
-      ctx.caster.hand.push(c);
-    }
-    if (log) log.push({ type: 'effect', source: '마스터 오버라이드', effect: `고코스트 카드 ${toDraw}장 서치, 코스트 1 적용` });
-  });
-
-  // 턴 종료 (forceEndTurn 플래그 → 엔진 while 루프에서 감지)
-  registry.register('endTurn', (ctx) => {
-    ctx.caster.forceEndTurn = true;
-  });
-
-  // 남은 에너지당 카드 1장 드로우
-  registry.register('drawPerEnergy', (ctx) => {
-    const remaining = ctx.caster.energy || 0;
-    if (remaining > 0 && ctx.engine) {
-      ctx.engine._drawCards(ctx.caster, remaining, '매크로 캔슬', ctx.state?.cardUsageLog);
-    }
-  });
-
-  // 에너지 전량 소모 (0으로 만들기)
-  registry.register('drainEnergy', (ctx) => {
-    ctx.caster.energy = 0;
-  });
-
-  // 에너지를 현재 최대치(baseEnergy)로 완전 회복
-  registry.register('restoreMaxEnergy', (ctx) => {
-    ctx.caster.energy = ctx.caster.baseEnergy || 3;
-  });
-
-  // 에너지 전환 (에너지 소모 후 체력 회복)
-  registry.register('energyToHeal', (ctx) => {
-    const energy = ctx.caster.energy || 0;
-    if (energy > 0) {
-      const healAmount = energy * (ctx.effect.multiplier || 10);
-      ctx.caster.energy = 0;
-      ctx.caster.hp = Math.min(ctx.caster.hp + healAmount, ctx.caster.maxHp);
-    }
-  });
-
-  // 방어도를 에너지로 전환 (최대 100 소모, 10당 1 에너지)
-  registry.register('shieldToEnergy', (ctx) => {
-    const currentShield = ctx.caster.shield || 0;
-    const toConsume = Math.min(currentShield, 100);
-    if (toConsume >= 10) {
-      const energyGain = Math.floor(toConsume / 10);
-      ctx.caster.shield -= toConsume;
-      ctx.caster.energy = Math.min((ctx.caster.energy || 0) + energyGain, ctx.caster.maxEnergyPool || 10);
-      if (ctx.state?.cardUsageLog) {
-        ctx.state.cardUsageLog.push({ type: 'effect', source: '동력 전환', effect: `방어도 ${toConsume} 소모 → 에너지 ${energyGain} 획득` });
-      }
-    }
-  });
-
-  // 방어도 훔침 통합 핸들러
-  //   mode: 'all'       — 적 방어도 전부 훔침 (내가 획득)
-  //   mode: 'half'      — 적 방어도 절반 제거 (내가 얻지 않음)
-  //   mode: 'halfSteal' — 적 방어도 50% 제거 + 내가 획득
-  //   mode: 'value'     — value만큼 훔침 (기본값, mode 생략 가능)
-  //   gain: false       — 제거만 하고 내가 얻지 않음
-  registry.register('stealShield', (ctx) => {
-    const mode = ctx.effect.mode || 'value';
-    const targetShield = ctx.target.shield || 0;
-    let amt = 0;
-
-    if (mode === 'all') {
-      amt = targetShield;
-      ctx.target.shield = 0;
-    } else if (mode === 'half') {
-      amt = Math.floor(targetShield / 2);
-      ctx.target.shield -= amt;
-    } else if (mode === 'halfSteal') {
-      amt = Math.floor(targetShield / 2);
-      ctx.target.shield -= amt;
-      ctx.caster.shield = (ctx.caster.shield || 0) + amt;
-      return;
-    } else {
-      amt = Math.min(targetShield, ctx.effect.value || 0);
-      ctx.target.shield -= amt;
-    }
-
-    if (ctx.effect.gain !== false && mode !== 'half') {
-      ctx.caster.shield = (ctx.caster.shield || 0) + amt;
-    }
-  });
-
-  // 하위 호환 alias
-  registry.register('stealShieldAll', (ctx) => registry.execute('stealShield', { ...ctx, effect: { ...ctx.effect, mode: 'all' } }));
-  registry.register('stealShieldHalfAndLose', (ctx) => registry.execute('stealShield', { ...ctx, effect: { ...ctx.effect, mode: 'half' } }));
-
-  // 적 방어도만큼 자해
-  registry.register('selfDamageByTargetShield', (ctx) => {
-    const dmg = ctx.target.shield || 0;
-    if (dmg > 0) applySelfDamage(ctx.caster, dmg);
-  });
-
-  // 턴 종료 시 무작위 카드 N장 버리기 (지연 등록)
-  registry.register('addEndOfTurnDiscard', (ctx) => {
-    ctx.caster.pendingEndOfTurnDiscards = (ctx.caster.pendingEndOfTurnDiscards || 0) + (ctx.effect.value || 1);
-  });
-
-  // 풀하우스 난타 (5회 타격)
-  registry.register('fullHouseHit', (ctx) => {
-    for (let i = 0; i < 5; i++) {
-      let dmg = 6;
-      if (Math.random() * 100 < 50 + (ctx.caster.luck || 0) + (ctx.caster.gambleBonusChance || 0)) {
-        dmg *= 2; ctx.caster.luckyThisTurn = (ctx.caster.luckyThisTurn || 0) + 1;
-      } else {
-        ctx.caster.unluckyThisTurn = (ctx.caster.unluckyThisTurn || 0) + 1; ctx.caster.consecutiveLuck = 0;
-      }
-      if (ctx.engine) ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-    }
-  });
-
-  // 행운 스택 기반 데미지
-  registry.register('damageByLuckStack', (ctx) => {
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, (ctx.caster.luck || 0) * ctx.effect.multiplier, ctx.caster);
-  });
-
-  // 적 최대 체력 비율 데미지
-  registry.register('damageMaxPercent', (ctx) => {
-    let dmg = Math.floor(ctx.target.maxHp * ctx.effect.value);
-    if (dmg > ctx.effect.limit) dmg = ctx.effect.limit;
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, dmg, ctx.caster);
-  });
-
-  // 불운 횟수 기반 추가 데미지
-  registry.register('damagePlusByUnluckyThisBattle', (ctx) => {
-    const extra = (ctx.caster.unluckyThisBattle || 0) * ctx.effect.multiplier;
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, extra, ctx.caster);
-  });
-
-  // 행운 횟수 기반 추가 데미지
-  registry.register('damagePlusByLuckyThisBattle', (ctx) => {
-    const extra = (ctx.caster.luckyThisBattle || 0) * ctx.effect.multiplier;
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, extra, ctx.caster);
-  });
-
-  // 이번 턴 불운 무시
-  registry.register('ignoreUnluckThisTurn', (ctx) => { ctx.caster.ignoreUnluck = true; });
-
-  // 이번 턴 도박 불운 시 재시전
-  registry.register('retryGambleOnUnluck', (ctx) => { ctx.caster.retryOnUnluck = true; });
-
-  // 덱 위 카드 버리고 코스트만큼 쉴드
-  registry.register('discardTopAndGainShieldByCost', (ctx) => {
-    if (ctx.caster.deck?.length > 0) {
-      const c = ctx.caster.deck.splice(0, 1)[0];
-      ctx.caster.void.push(c);
-      ctx.caster.shield = (ctx.caster.shield || 0) + (c.cost || 0);
-    }
-  });
-
-  // 손패+덱을 합쳐 섞고 N장 뽑기
-  registry.register('reshuffleAndDraw', (ctx) => {
-    while (ctx.caster.hand.length > 0) ctx.caster.void.push(ctx.caster.hand.pop());
-    for (let i = 0; i < ctx.effect.value; i++) { if (ctx.engine) ctx.engine.drawCard(ctx.caster, 'Reshuffle'); }
-  });
-
-  // selfWeakness — 자신에게 약화 부여
-  registry.register('selfWeakness', (ctx) => { ctx.caster.weakness = (ctx.caster.weakness || 0) + ctx.effect.value; });
-
-  // 무작위 버프
-  registry.register('randomBuff', (ctx) => {
-    const r = Math.random();
-    if (r < 0.25) ctx.caster.strength = (ctx.caster.strength || 0) + 5;
-    else if (r < 0.5) ctx.caster.shield = (ctx.caster.shield || 0) + 20;
-    else if (r < 0.75) ctx.caster.energy = (ctx.caster.energy || 0) + 2;
-    else { for (let i = 0; i < 3; i++) if (ctx.engine) ctx.engine.drawCard(ctx.caster, 'Random Buff'); }
-  });
-
-  // 카지노 로얄 필드 리셋
-  registry.register('casinoRoyalFieldReset', (ctx) => {
-    ctx.caster.shield = 0; ctx.target.shield = 0;
-    ctx.caster.strength = 0; ctx.target.strength = 0;
-    ctx.caster.weakness = 0; ctx.target.weakness = 0;
-    ctx.caster.virus = 0; ctx.target.virus = 0;
-    ctx.caster.corrosion = 0; ctx.target.corrosion = 0;
-    ctx.caster.hp = Math.min(ctx.caster.maxHp, Math.floor(ctx.caster.maxHp * 0.5));
-    ctx.target.hp = Math.min(ctx.target.maxHp, Math.floor(ctx.target.maxHp * 0.5));
-  });
-
-  // 체력 비율 설정
-  registry.register('setHpScale', (ctx) => { ctx.caster.hp = Math.max(1, Math.floor(ctx.caster.hp * ctx.effect.value) || 1); });
-  registry.register('setEnemyHpScale', (ctx) => { ctx.target.hp = Math.max(1, Math.floor(ctx.target.hp * ctx.effect.value) || 1); });
-
-  // 데스 크로스 (체력차 절댓값 도박)
-  registry.register('gambleDeathCross', (ctx) => {
-    const diff = Math.abs(ctx.caster.hp - ctx.target.hp);
-    const chance = 30 + (ctx.caster.luck || 0) + (ctx.caster.gambleBonusChance || 0);
-    if (Math.random() * 100 < chance) {
-      ctx.caster.luckyThisTurn = (ctx.caster.luckyThisTurn || 0) + 1;
-      ctx.caster.consecutiveLuck = (ctx.caster.consecutiveLuck || 0) + 1;
-      if (ctx.engine) ctx.engine.applyDamage(ctx.target, diff * 2, ctx.caster);
-    } else {
-      ctx.caster.unluckyThisTurn = (ctx.caster.unluckyThisTurn || 0) + 1;
-      ctx.caster.consecutiveLuck = 0;
-      if (ctx.engine) ctx.engine.applyDamage(ctx.caster, diff, ctx.target);
-    }
-  });
-
-  // 이번 턴 누적 행운 체크 데미지 (이번 턴 성공 required회 이상 시 scale배)
-  registry.register('damageIfConsecutiveLuck', (ctx) => {
-    const str = (ctx.caster.strength || 0);
-    const weak = (ctx.caster.weakness || 0);
-    let d = ctx.effect.base + str - weak;
-    const consecutive = (ctx.caster.luckyThisTurn || 0) >= ctx.effect.required;
-    if (consecutive) d = Math.floor((ctx.effect.base + str - weak) * (ctx.effect.scale || 1));
-    if (ctx._dmgFlags) ctx._dmgFlags.strengthApplied = true;
-    if (ctx.engine) ctx.engine.applyDamage(ctx.target, Math.max(1, d), ctx.caster);
-  });
-
-  // 동전의 양면 - 앞면(잃은 체력만큼 방어도)
-  registry.register('coinFlipHeads', (ctx) => {
-    const lost = Math.floor(ctx.caster.maxHp * 0.5);
-    ctx.caster.shield = (ctx.caster.shield || 0) + lost;
-  });
-
-  // 도박빚 탕감 계약
-  registry.register('gambleDebt', (ctx) => {
-    ctx.caster.hand.forEach(c => {
-      if (c.keywords?.includes('gamble')) { c._oldCost = c._oldCost !== undefined ? c._oldCost : c.cost; c.cost = 0; }
-    });
-  });
 }
 
+const booleanStats = new Set(['doubleNetworkStacks', 'energyCarryOver', 'overclockUnlimited']);
+const nonnegativeStats = new Set(['shield', 'weakness', 'virus', 'corrosion', 'overclockStacks', 'overflowNext', 'luck', 'networkStacks']);
+const supportedStats = new Set(['hp', 'maxHp', 'shield', 'energy', 'baseEnergy', 'strength', 'weakness', 'virus', 'corrosion',
+    'overclockStacks', 'overflowNext', 'luck', 'consecutiveLuck', 'networkStacks', 'extraDraw', 'rebuildBonuses', ...booleanStats]);
+function getStat(entity, stat) {
+    if (stat === 'gambleBonusChance') return tv(entity, stat);
+    if (booleanStats.has(stat)) return entity[stat] ? 1 : 0;
+    return supportedStats.has(stat) ? n(entity, stat) : 0;
+}
+function setStat(entity, stat, value) {
+    if (stat === 'gambleBonusChance') { turn(entity)[stat] = value; return; }
+    if (!supportedStats.has(stat)) { console.warn(`[EffectRegistry] Unsupported modifyStat stat: ${stat}`); return; }
+    if (booleanStats.has(stat)) entity[stat] = value !== 0;
+    else if (stat === 'maxHp') entity[stat] = Math.max(1, value);
+    else entity[stat] = nonnegativeStats.has(stat) ? Math.max(0, value) : value;
+}
+function modifyStat(entity, stat, value, mode) {
+    const current = getStat(entity, stat);
+    const next = mode === 'set' ? roundToInt(value) : mode === 'multiply' ? roundToInt(current * value) : current + roundToInt(value);
+    setStat(entity, stat, next);
+    if (stat === 'maxHp' && entity.hp > entity.maxHp) entity.hp = entity.maxHp;
+    if (stat === 'hp') entity.hp = Math.max(0, Math.min(entity.hp, entity.maxHp));
+}
+function drawCards(ctx, entity, count) {
+    if (ctx.engine) return ctx.engine.drawCards(entity, count);
+    for (let i = 0; i < count && entity.drawPile.length && entity.hand.length < 10; i++) {
+        const card = entity.drawPile.shift(); entity.hand.push(card); entity.lastDrawnCard = card;
+    }
+}
+function enqueue(ctx, timing, effect, card = ctx.card) {
+    if (ctx.engine?.enqueueDeferred) return ctx.engine.enqueueDeferred({ ...ctx, card }, timing, effect);
+    (ctx.caster.deferredActions ??= []).push({ timing, effect, caster: ctx.caster, target: ctx.target, card });
+}
+function attackDamage(ctx, baseDamage, hits = 1) {
+    let damage = baseDamage;
+    if (!ctx.strengthApplied) { damage += n(ctx.caster, 'strength') - n(ctx.caster, 'weakness'); ctx.strengthApplied = true; }
+    if (tv(ctx.caster, 'nextAttackBonus') > 0) { damage += tv(ctx.caster, 'nextAttackBonus'); turn(ctx.caster).nextAttackBonus = 0; }
+    if (tv(ctx.caster, 'nextDamageMultiplier') > 0) { damage *= tv(ctx.caster, 'nextDamageMultiplier'); turn(ctx.caster).nextDamageMultiplier = 0; }
+    if (ctx.cardDamageMultiplier > 0) damage *= ctx.cardDamageMultiplier;
+    damage = Math.max(1, roundToInt(damage));
+    const pierce = Boolean(ctx.effect.bypassShield || turn(ctx.caster).armorPierceNextAttack);
+    turn(ctx.caster).armorPierceNextAttack = false;
+    for (let i = 0; i < hits; i++) ctx.engine.applyDamage(ctx.target, damage, ctx.caster, pierce);
+}
+function shuffle(cards) {
+    for (let i = cards.length - 1; i > 0; i--) {
+        const j = randomIndex(i + 1); [cards[i], cards[j]] = [cards[j], cards[i]];
+    }
+}
+
+export function registerCoreEffects(registry) {
+    const all = (effects, ctx) => registry.executeAll(effects, ctx);
+    const as = (type, ctx, fields = {}) => { Object.assign(ctx.effect, fields); registry.execute(type, ctx); };
+    const single = (ctx, effect) => {
+        const previous = ctx.effect; ctx.effect = effect;
+        try { registry.execute(effect.type, ctx); } finally { ctx.effect = previous; }
+    };
+
+    registry.register('damage', ctx => attackDamage(ctx, ocVal(ctx), ctx.effect.hits > 0 ? ctx.effect.hits : 1));
+    registry.register('fixedDamage', ctx => {
+        const value = roundToInt(v(ctx.effect));
+        if (value > 0) ctx.engine.applyDamage(targetOf(ctx), value, ctx.caster, Boolean(ctx.effect.bypassShield));
+    });
+    registry.register('shield', ctx => add(ctx.caster, 'shield', roundToInt(v(ctx.effect))));
+    registry.register('modifyStat', ctx => {
+        const e = ctx.effect, entity = targetOf(ctx), mode = e.mode ?? 'add';
+        let value = v(e);
+        if (e.source) value = getScalingSourceValue(e.source, ctx);
+        else if (e.scaling) {
+            value += effectScalingSource(e, ctx) * (e.scaling.multiplier ?? 0);
+            if (e.scaling.max > 0) value = Math.min(value, e.scaling.max);
+            if (e.scaling.min > 0) value = Math.max(value, e.scaling.min);
+        }
+        const virusBefore = n(entity, 'virus');
+        modifyStat(entity, e.stat, value, mode);
+        if (e.stat === 'virus' && mode !== 'set' && mode !== 'multiply' && n(entity, 'virus') > virusBefore)
+            ctx.engine?.notifyVirusApplied(ctx.caster, entity, entity.virus - virusBefore);
+    });
+    registry.register('scaledEffect', ctx => {
+        const e = ctx.effect, scaling = e.scaling;
+        if (!scaling) throw new Error('[EffectRegistry] scaledEffect requires scaling data.');
+        let computed = v(e) + effectScalingSource(e, ctx) * (scaling.multiplier ?? 0);
+        if (scaling.max > 0) computed = Math.min(computed, scaling.max);
+        if (scaling.min > 0) computed = Math.max(computed, scaling.min);
+        const value = roundToInt(computed);
+        if (value <= 0 && e.action !== 'modifyStat') return;
+        const saved = { value: e.value, overclockScale: e.overclockScale, mode: e.mode, source: e.source };
+        Object.assign(e, { value, overclockScale: false, mode: null, source: null });
+        try {
+            const action = e.action || 'damage';
+            if (action === 'modifyStat') e.mode = saved.mode;
+            if (!['damage', 'shield', 'heal', 'draw', 'selfDamage', 'energy', 'modifyStat'].includes(action))
+                throw new Error(`[EffectRegistry] Unsupported scaled action: ${action}`);
+            registry.execute(action, ctx);
+        } finally { Object.assign(e, saved); }
+    });
+    registry.register('conditional', ctx => {
+        const e = ctx.effect;
+        if (e.condition) all(evaluateCondition(e.condition, ctx) ? e.thenEffects : e.elseEffects, ctx);
+    });
+    registry.register('selfDamage', ctx => {
+        const e = ctx.effect;
+        const value = e.mode === 'targetShield' ? n(ctx.target, 'shield')
+            : e.mode === 'percent' ? roundToInt(ctx.caster.maxHp * v(e) / 100) : roundToInt(ocVal(ctx));
+        ctx.engine.applySelfDamage(ctx.caster, value);
+    });
+    registry.register('dismantle', ctx => {
+        const e = ctx.effect, c = ctx.caster, source = e.source ?? 'hand';
+        const cards = source === 'deck' ? c.drawPile : c.hand;
+        const count = e.countAll ? cards.length : Math.max(1, roundToInt(v(e)));
+        if (count <= 0 || !cards.length) return;
+        let actual = Math.min(count, cards.length);
+        const pending = ctx.engine?.pendingDismantleTargets;
+        if (e.mode === 'chosen' && pending) actual = Math.min(actual, pending.length);
+        const dismantled = [];
+        for (let i = 0; i < actual && cards.length; i++) {
+            let index;
+            if (e.filter) index = cards.findIndex(card => matchesFilter(card, e.filter));
+            else if (source === 'deck') index = 0;
+            else if (e.mode === 'chosen' && pending?.length) index = cards.indexOf(pending.shift());
+            else index = randomIndex(cards.length);
+            if (index < 0) break;
+            const [card] = cards.splice(index, 1);
+            if (ctx.engine) ctx.engine.applyRebuildOrVoid(c, card); else c.voidPile.push(card);
+            dismantled.push(card);
+        }
+        addTurn(c, 'dismantledThisTurn', dismantled.length); add(c, 'dismantledThisBattle', dismantled.length);
+        if (dismantled.length) {
+            if (e.bonus === 'drawEqual') drawCards(ctx, c, dismantled.length);
+            else if (e.bonus === 'shieldScale') add(c, 'shield', roundToInt(dismantled.length * (e.bonusMultiplier > 0 ? e.bonusMultiplier : 10)));
+            else if (e.bonus === 'energyByCost') {
+                for (const card of dismantled) add(c, 'energy', card.cost);
+                drawCards(ctx, c, 1);
+            }
+        }
+        for (const card of dismantled) {
+            if (card.extractEffects?.length) {
+                const previousCard = ctx.card; ctx.card = card;
+                try { all(card.extractEffects, ctx); } finally { ctx.card = previousCard; }
+            }
+            if (turn(c).extractEnergyBonusActive && c.extractEnergyAmount > 0 && tv(c, 'extractEnergyRemainingCount') > 0) {
+                add(c, 'energy', c.extractEnergyAmount); turn(c).extractEnergyRemainingCount--;
+            }
+        }
+        for (const card of dismantled) ctx.engine?.checkCoreTriggers('dismantle', c, card);
+    });
+
+    registry.register('heal', ctx => {
+        const value = ctx.effect.mode === 'percent' ? roundToInt(ctx.caster.maxHp * v(ctx.effect) / 100) : roundToInt(v(ctx.effect));
+        ctx.caster.hp = Math.min(ctx.caster.hp + value, ctx.caster.maxHp);
+    });
+    registry.register('draw', ctx => {
+        let count = roundToInt(ocVal(ctx));
+        if (ctx.caster.skipNextDrawCount > 0) {
+            const skip = Math.min(count, ctx.caster.skipNextDrawCount); ctx.caster.skipNextDrawCount -= skip; count -= skip;
+        }
+        drawCards(ctx, ctx.caster, count);
+    });
+    registry.register('energy', ctx => {
+        const value = roundToInt(ocVal(ctx));
+        if (ctx.effect.timing === 'nextTurn') enqueue(ctx, 'nextTurnStart', { type: 'energy', value });
+        else add(ctx.caster, 'energy', value);
+    });
+    registry.register('shieldBreak', ctx => {
+        const e = ctx.effect, t = ctx.target;
+        if (e.mode === 'allAndDamage') {
+            const destroyed = t.shield; t.shield = 0;
+            const value = roundToInt(destroyed * (e.fraction ?? 0));
+            if (value > 0) ctx.engine.applyDamage(t, value, ctx.caster);
+        } else t.shield = Math.max(0, t.shield - roundToInt(v(e)));
+    });
+    registry.register('convertResource', ctx => {
+        const e = ctx.effect, c = ctx.caster, sourceAmount = getStat(c, e.from);
+        if (sourceAmount <= 0) return;
+        const value = roundToInt(sourceAmount * (e.ratio > 0 ? e.ratio : 1)); setStat(c, e.from, 0);
+        if (e.to === 'energy') add(c, 'energy', value);
+        else if (e.to === 'heal') c.hp = Math.min(c.hp + value, c.maxHp);
+        else if (e.to === 'draw') drawCards(ctx, c, value);
+        else if (e.to === 'shield') add(c, 'shield', value);
+        else modifyStat(c, e.to, value, 'add');
+    });
+    registry.register('stealShield', ctx => {
+        const e = ctx.effect;
+        const stolen = e.mode === 'all' ? ctx.target.shield : e.mode === 'half' ? Math.trunc(ctx.target.shield / 2)
+            : Math.min(roundToInt(v(e)), ctx.target.shield);
+        ctx.target.shield -= stolen;
+        if (e.mode !== 'half' || e.gain) add(ctx.caster, 'shield', stolen);
+    });
+    registry.register('discard', ctx => {
+        const e = ctx.effect, hand = ctx.caster.hand;
+        if (e.timing === 'turnEnd') { enqueue(ctx, 'turnEnd', cloneCard(e)); return; }
+        const count = e.countAll ? hand.length : Math.min(roundToInt(v(e)), hand.length);
+        for (let i = 0; i < count && hand.length; i++) ctx.caster.voidPile.push(hand.splice(e.mode === 'random' ? randomIndex(hand.length) : hand.length - 1, 1)[0]);
+    });
+    registry.register('searchDeck', ctx => {
+        const e = ctx.effect, c = ctx.caster, pile = c.drawPile;
+        if (!pile.length) return;
+        const maxFind = Math.max(1, roundToInt(v(e)));
+        if (e.filter === 'highestCost') {
+            const revealed = [];
+            for (let i = 0, count = Math.min(maxFind, pile.length); i < count; i++) revealed.push(pile.splice(randomIndex(pile.length), 1)[0]);
+            let highest = 0;
+            for (let i = 1; i < revealed.length; i++) if (revealed[i].cost > revealed[highest].cost) highest = i;
+            const [chosen] = revealed.splice(highest, 1); chosen.cost = 0;
+            (c.hand.length < 10 ? c.hand : c.voidPile).push(chosen);
+            for (const card of revealed) pile.unshift(card);
+        } else for (let i = pile.length - 1, found = 0; i >= 0 && found < maxFind && c.hand.length < 10; i--) {
+            if (!matchesFilter(pile[i], e.filter)) continue;
+            const [card] = pile.splice(i, 1);
+            if (e.costMode === 'zeroCost') card.cost = 0; else if (e.costMode === 'reduce') card.cost = Math.max(0, card.cost - 1);
+            c.hand.push(card); found++;
+        }
+    });
+
+    registry.register('overclockGain', ctx => {
+        const c = ctx.caster, gain = roundToInt(v(ctx.effect));
+        c.overclockStacks = c.overclockUnlimited ? n(c, 'overclockStacks') + gain : Math.min(n(c, 'overclockStacks') + gain, c.overclockMax ?? 4);
+    });
+    registry.register('overclockConsume', ctx => {
+        const c = ctx.caster, e = ctx.effect, consumed = n(c, 'overclockStacks');
+        c.overclockStacks = 0; ctx.overclockConsumed = consumed;
+        if (consumed <= 0) return;
+        const value = roundToInt(consumed * (v(e) > 0 ? v(e) : 1));
+        if (e.action === 'damage' && value > 0) ctx.engine.applyDamage(ctx.target, value, c);
+        else if (e.action === 'shield') add(c, 'shield', value);
+        else if (e.action === 'heal') c.hp = Math.min(c.hp + value, c.maxHp);
+        all(e.effects, ctx);
+    });
+    registry.register('overload', ctx => { const e = ctx.effect; all(n(ctx.caster, 'overclockStacks') >= roundToInt(v(e)) ? e.thenEffects : e.elseEffects, ctx); });
+    registry.register('preventSelfDamage', ctx => { turn(ctx.caster).preventNextSelfDamage = true; });
+    registry.register('extract', ctx => {
+        const c = ctx.caster; all(ctx.card?.extractEffects, ctx);
+        if (turn(c).extractEnergyBonusActive && c.extractEnergyAmount > 0 && tv(c, 'extractEnergyRemainingCount') > 0) {
+            add(c, 'energy', c.extractEnergyAmount); turn(c).extractEnergyRemainingCount--;
+        }
+    });
+    // C# HandleRebuild is empty: the engine applies rebuild after play and dismantle.
+    registry.register('rebuild', () => {});
+    registry.register('threadSync', ctx => {
+        const c = ctx.caster, hand = c.hand;
+        if (!hand.length) return;
+        const targets = []; let totalCost;
+        if (hand.length === 1) { targets.push(hand[0]); totalCost = hand[0].cost; }
+        else {
+            let highest = 0, lowest = 0;
+            for (let i = 1; i < hand.length; i++) {
+                if (hand[i].cost > hand[highest].cost) highest = i;
+                if (hand[i].cost < hand[lowest].cost) lowest = i;
+            }
+            targets.push(hand[highest]); if (highest !== lowest) targets.push(hand[lowest]);
+            totalCost = hand[highest].cost + hand[lowest].cost;
+        }
+        for (const card of targets) hand.splice(hand.indexOf(card), 1);
+        if (ctx.engine) for (const card of targets) ctx.engine.dismantleCard(c, card, 'hand');
+        else { c.voidPile.push(...targets); addTurn(c, 'dismantledThisTurn', targets.length); add(c, 'dismantledThisBattle', targets.length); }
+        const damage = roundToInt(totalCost * (v(ctx.effect) > 0 ? v(ctx.effect) : n(c, 'networkStacks')));
+        if (damage > 0) ctx.engine.applyDamage(ctx.target, damage, c);
+    });
+    registry.register('masterOverride', ctx => {
+        const c = ctx.caster, pile = c.drawPile; let highest = -1;
+        for (let i = 0; i < pile.length; i++) {
+            if (!['attack', 'skill'].includes(pile[i].type)) continue;
+            if (highest < 0 || pile[i].cost > pile[highest].cost) highest = i;
+        }
+        if (highest < 0) return;
+        const [card] = pile.splice(highest, 1); ctx.engine.executeRemoteCard(card, c, ctx.target, ctx);
+        if (!c.hand.includes(card)) { c.hand.push(card); c.lastDrawnCard = card; }
+    });
+    registry.register('setupExtractEnergy', ctx => {
+        const c = ctx.caster;
+        if (!turn(c).extractEnergyBonusActive) { turn(c).extractEnergyBonusActive = true; c.extractEnergyAmount = 1; }
+        turn(c).extractEnergyRemainingCount = Math.max(tv(c, 'extractEnergyRemainingCount'), roundToInt(v(ctx.effect)));
+    });
+    registry.register('protocolBypass', ctx => add(ctx.caster, 'protocolBypassCount', Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('nextProtocolShieldBonus', ctx => add(ctx.caster, 'nextProtocolShieldBonus', Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('nextProtocolEffectRepeat', ctx => add(ctx.caster, 'nextProtocolEffectRepeat', Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('armorPierce', ctx => { turn(ctx.caster).armorPierceNextAttack = true; });
+    registry.register('costReduceHandCards', ctx => {
+        const e = ctx.effect, hand = ctx.caster.hand, reduction = roundToInt(v(e));
+        if (e.mode === 'random' && hand.length) {
+            const cards = hand.filter(card => !e.filter || matchesFilter(card, e.filter));
+            for (let i = 0, count = Math.min(2, cards.length); i < count; i++) {
+                const index = i + randomIndex(cards.length - i); [cards[i], cards[index]] = [cards[index], cards[i]];
+                cards[i].cost = Math.max(0, cards[i].cost - reduction);
+            }
+        } else for (const card of hand) if (!e.filter || matchesFilter(card, e.filter)) card.cost = Math.max(0, e.mode === 'set' ? reduction : card.cost - reduction);
+    });
+
+    registerBioGambleEffects(registry);
+
+    registry.register('forceTurnEnd', ctx => { ctx.caster.forceEndTurn = true; });
+    registry.register('returnToHandZeroCost', ctx => {
+        if (!ctx.card || ctx.caster.hand.length >= 10) return;
+        ctx.card.cost = 0; if (!ctx.caster.hand.includes(ctx.card)) ctx.caster.hand.push(ctx.card);
+    });
+    registry.register('reshuffleAndDraw', ctx => {
+        const c = ctx.caster; c.drawPile.push(...c.hand); c.hand.length = 0; shuffle(c.drawPile);
+        drawCards(ctx, c, Math.max(1, roundToInt(v(ctx.effect))));
+    });
+    registry.register('adjustCostLastDrawn', ctx => {
+        const c = ctx.caster, card = c.lastDrawnCard;
+        if (card && c.hand.includes(card)) card.cost = Math.max(0, ctx.effect.mode === 'set' ? roundToInt(v(ctx.effect)) : card.cost + roundToInt(v(ctx.effect)));
+    });
+    registry.register('randomBuff', ctx => {
+        const value = Math.max(1, roundToInt(v(ctx.effect))), roll = randomIndex(3);
+        if (roll === 0) add(ctx.caster, 'strength', value); else if (roll === 1) add(ctx.caster, 'energy', value); else drawCards(ctx, ctx.caster, value);
+    });
+    registry.register('casinoFieldReset', ctx => {
+        const e = ctx.effect;
+        for (const entity of [ctx.caster, ctx.target]) entity.weakness = entity.virus = entity.corrosion = entity.shield = 0;
+        const ratio = v(e) > 0 ? v(e) : 0.5;
+        const heal = entity => { entity.hp = Math.min(entity.hp + roundToInt(entity.maxHp * ratio), entity.maxHp); };
+        if (e.chance > 0) {
+            const success = resolveGamble(ctx, e.chance); heal(ctx.caster);
+            if (!success && !turn(ctx.caster).lastGambleUnluckSoftened) heal(ctx.target);
+        } else { heal(ctx.caster); heal(ctx.target); }
+    });
+    registry.register('gambleDebt', ctx => {
+        let debt = 0;
+        for (const card of ctx.caster.hand) if (card.pack === 'russian_roulette' || hasKeyword(card, 'gamble')) { debt += card.cost; card.cost = 0; }
+        add(ctx.caster, 'turnEndHpPenalty', v(ctx.effect) > 0 ? roundToInt(v(ctx.effect)) : debt);
+    });
+    registry.register('discardTopAndShield', ctx => {
+        const c = ctx.caster; if (!c.drawPile.length) return;
+        const card = c.drawPile.shift(); c.voidPile.push(card);
+        const value = roundToInt(card.cost * Math.max(1, n(c, 'luck')) * (v(ctx.effect) > 0 ? v(ctx.effect) : 1));
+        if (value > 0) add(c, 'shield', value);
+    });
+    registry.register('dismantleVoidRecall', ctx => {
+        const c = ctx.caster, previous = c.voidPile.length, count = c.hand.length;
+        c.voidPile.push(...c.hand); c.hand.length = 0; addTurn(c, 'dismantledThisTurn', count); add(c, 'dismantledThisBattle', count);
+        if (previous > 0) c.hand.push(c.voidPile.splice(previous - 1, 1)[0]);
+    });
+    registry.register('conditionalByDismantledType', ctx => {
+        const e = ctx.effect, pile = ctx.caster.voidPile;
+        if (pile.length) all(!e.filter || matchesFilter(pile[pile.length - 1], e.filter) ? e.thenEffects : e.elseEffects, ctx);
+    });
+    registry.register('energyDrain', ctx => add(ctx.target, 'energyDrainNext', Math.max(0, roundToInt(v(ctx.effect)))));
+    registry.register('drainEnergy', ctx => registry.execute('energyDrain', ctx));
+    registry.register('consumeAllEnergy', ctx => {
+        const e = ctx.effect, consumed = ctx.caster.energy; ctx.caster.energy = 0; ctx.energyConsumed = consumed;
+        if (consumed <= 0) return;
+        if (e.effects != null) { for (const effect of e.effects) effect.value = consumed * (v(effect) > 0 ? v(effect) : 1); all(e.effects, ctx); }
+        else all(e.thenEffects, ctx);
+    });
+    registry.register('drawPerEnergy', ctx => drawCards(ctx, ctx.caster, ctx.caster.energy * Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('drawAndZeroCost', ctx => {
+        const c = ctx.caster, before = c.hand.length; drawCards(ctx, c, Math.max(1, roundToInt(v(ctx.effect))));
+        for (let i = before; i < c.hand.length; i++) {
+            const card = c.hand[i], originalCost = card.cost; card.cost = 0;
+            enqueue(ctx, 'turnEnd', { type: 'restoreCardCost', value: originalCost }, card);
+        }
+    });
+    registry.register('diceRollCombo', ctx => {
+        const e = ctx.effect, die1 = randomIndex(6) + 1, die2 = randomIndex(6) + 1, sum = die1 + die2;
+        if (die1 === die2) { if (e.thenEffects != null) all(e.thenEffects, ctx); else single(ctx, { type: 'draw', value: die1 }); }
+        else if (e.effects != null && sum - 2 < e.effects.length) single(ctx, e.effects[sum - 2]);
+        else if (e.elseEffects != null) all(e.elseEffects, ctx); else single(ctx, { type: 'damage', value: sum });
+    });
+    registry.register('gambleDeathCross', ctx => {
+        const e = ctx.effect, difference = Math.abs(ctx.caster.hp - ctx.target.hp);
+        if (resolveGamble(ctx, e.chance > 0 ? e.chance : 0.5)) {
+            const value = roundToInt(difference * (v(e) > 0 ? v(e) : 1));
+            if (value > 0) ctx.engine.applyDamage(ctx.target, value, ctx.caster); all(e.thenEffects, ctx);
+        } else if (!turn(ctx.caster).lastGambleUnluckSoftened) {
+            if (e.ratio > 0) ctx.engine.applySelfDamage(ctx.caster, roundToInt(difference * e.ratio)); all(e.elseEffects, ctx);
+        }
+    });
+    registry.register('conditionalAdd', ctx => { const e = ctx.effect; all(!e.condition || evaluateCondition(e.condition, ctx) ? e.thenEffects : e.elseEffects, ctx); });
+    registry.register('broadcastDebuffs', ctx => {
+        const weakness = Math.max(0, n(ctx.caster, 'weakness')), virus = Math.max(0, n(ctx.caster, 'virus')), corrosion = Math.max(0, n(ctx.caster, 'corrosion'));
+        add(ctx.target, 'weakness', weakness); add(ctx.target, 'virus', virus); add(ctx.target, 'corrosion', corrosion);
+        if (virus > 0) ctx.engine?.notifyVirusApplied(ctx.caster, ctx.target, virus);
+    });
+    registry.register('drawBothSides', ctx => { const count = Math.max(1, roundToInt(ocVal(ctx))); drawCards(ctx, ctx.caster, count); drawCards(ctx, ctx.target, count); });
+    registry.register('kernelPanicDamage', ctx => {
+        const maximum = Math.max(1, roundToInt(v(ctx.effect))); if (ctx.caster.maxHp <= 0) return;
+        attackDamage(ctx, Math.max(1, Math.min(maximum, roundToInt(maximum * (ctx.caster.maxHp - ctx.caster.hp) / ctx.caster.maxHp))));
+    });
+    registry.register('openAccessDraw', ctx => {
+        const c = ctx.caster; let filter = ctx.effect.filter || ctx.openAccessFilter || ctx.engine?.pendingOpenAccessFilter;
+        if (!filter) {
+            const attacks = c.drawPile.filter(card => card.type === 'attack').length, skills = c.drawPile.filter(card => card.type === 'skill').length;
+            const cores = c.drawPile.filter(card => card.type === 'power').length;
+            filter = attacks >= skills && attacks >= cores ? 'attack' : skills >= cores ? 'skill' : 'core';
+        }
+        const before = c.hand.length; drawCards(ctx, c, 1);
+        if (c.hand.length > before && matchesFilter(c.hand[c.hand.length - 1], filter)) single(ctx, { type: 'searchDeck', value: 1, filter });
+    });
+    for (const [type, timing, action] of [['energyNextTurn', 'nextTurnStart', 'energy'], ['nextTurnShield', 'nextTurnStart', 'shield'],
+        ['nextTurnSelfDamage', 'nextTurnStart', 'selfDamage'], ['selfDamageAtTurnEnd', 'turnEnd', 'selfDamage']])
+        registry.register(type, ctx => enqueue(ctx, timing, { type: action, value: roundToInt(ocVal(ctx)) }));
+    registry.register('returnToHandNextTurn', ctx => enqueue(ctx, 'nextTurnStart', { type: 'returnToHandZeroCost' }));
+    registry.register('addEndOfTurnDiscard', ctx => { const e = ctx.effect; enqueue(ctx, 'turnEnd', { type: 'discard', value: v(e), mode: e.mode, countAll: e.countAll }); });
+
+    for (const [type, stat, target] of [['strength', 'strength', 'self'], ['weakness', 'weakness', 'enemy'], ['virus', 'virus', 'enemy'],
+        ['selfWeakness', 'weakness', 'self'], ['overflow', 'overflowNext', 'self'], ['addLuck', 'luck', 'self'], ['addExtraDraw', 'extraDraw', 'self']])
+        registry.register(type, ctx => as('modifyStat', ctx, { stat, target }));
+    registry.register('tempStrength', ctx => {
+        const value = roundToInt(v(ctx.effect)); add(ctx.caster, 'strength', value);
+        enqueue(ctx, 'turnEnd', { type: 'modifyStat', stat: 'strength', target: 'self', value: -value });
+    });
+    registry.register('corrosion', ctx => as('modifyStat', ctx, { stat: 'corrosion', target: ctx.effect.target || 'enemy' }));
+    registry.register('virusOnCardPlayedNextTurn', ctx => add(ctx.target, 'virusOnCardPlayedNextTurn', Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('overflowReduce', ctx => as('modifyStat', ctx, { stat: 'overflowNext', target: 'self', value: -v(ctx.effect) }));
+    registry.register('overclockReduce', ctx => {
+        const required = roundToInt(Math.abs(v(ctx.effect)));
+        if (n(ctx.caster, 'overclockStacks') < required) { ctx.abortRemainingEffects = true; return; }
+        as('modifyStat', ctx, { stat: 'overclockStacks', target: 'self', value: -required });
+    });
+    registry.register('overclockReset', ctx => as('modifyStat', ctx, { stat: 'overclockStacks', target: 'self', mode: 'set', value: 0 }));
+    registry.register('maxHpReduce', ctx => as('modifyStat', ctx, { stat: 'maxHp', target: 'self', value: -Math.abs(v(ctx.effect)) }));
+    registry.register('doubleLuck', ctx => as('modifyStat', ctx, { stat: 'luck', target: 'self', mode: 'multiply', value: 2 }));
+    registry.register('loseAllLuck', ctx => as('modifyStat', ctx, { stat: 'luck', target: 'self', mode: 'set', value: 0 }));
+    registry.register('doubleVirus', ctx => as('modifyStat', ctx, { stat: 'virus', target: 'enemy', mode: 'multiply', value: 2 }));
+    registry.register('removeOverclockLimit', ctx => as('modifyStat', ctx, { stat: 'overclockUnlimited', target: 'self', mode: 'set', value: 1 }));
+    for (const [type, action] of [['scaledDamage', 'damage'], ['scaledDraw', 'draw'], ['scaledShield', 'shield'], ['scaledHeal', 'heal'],
+        ['scaledSelfDamage', 'selfDamage'], ['scaledSelfDamagePercent', 'selfDamage']]) registry.register(type, ctx => as('scaledEffect', ctx, { action }));
+    registry.register('scaledSelfWeakness', ctx => as('scaledEffect', ctx, { action: 'modifyStat', stat: 'weakness', target: 'self' }));
+    registry.register('scaledMaxHpReduce', ctx => as('scaledEffect', ctx, { action: 'modifyStat', stat: 'maxHp' }));
+    registry.register('healPercent', ctx => as('heal', ctx, { mode: 'percent' }));
+    registry.register('endTurn', ctx => registry.execute('forceTurnEnd', ctx));
+    registry.register('discardAll', ctx => as('discard', ctx, { countAll: true }));
+    registry.register('discardRandom', ctx => as('discard', ctx, { mode: 'random' }));
+    registry.register('selfDamageByTargetShield', ctx => as('selfDamage', ctx, { mode: 'targetShield' }));
+    registry.register('shieldBreakAllAndDamage', ctx => as('shieldBreak', ctx, { mode: 'allAndDamage' }));
+    registry.register('casinoRoyalFieldReset', ctx => registry.execute('casinoFieldReset', ctx));
+    registry.register('retryGambleOnUnluck', ctx => registry.execute('retryOnUnluck', ctx));
+    registry.register('softenNextUnluck', ctx => { turn(ctx.caster).softenNextUnluckPenalty = Math.max(1, roundToInt(v(ctx.effect))); });
+    registry.register('luckyDayDebt', ctx => Object.assign(turn(ctx.caster), { luckyDayDebtActive: true, luckyDayLuckPerSuccess: Math.max(1, roundToInt(v(ctx.effect))),
+        luckyDayHpLossPerSuccess: Math.max(1, roundToInt(ctx.effect.bonusMultiplier ?? 0)), luckyDaySuccessCount: 0 }));
+    registry.register('dismantleAllAndScaleDraw', ctx => as('dismantle', ctx, { countAll: true, bonus: 'drawEqual' }));
+    registry.register('dismantleAllAndScaleShield', ctx => as('dismantle', ctx, { countAll: true, bonus: 'shieldScale' }));
+    registry.register('dismantleForEnergy', ctx => as('dismantle', ctx, { bonus: 'energyByCost' }));
+    registry.register('dismantleNetworkAndDraw', ctx => as('dismantle', ctx, { filter: 'network', countAll: true, bonus: 'drawEqual' }));
+    registry.register('dismantleTop', ctx => as('dismantle', ctx, { source: 'deck' }));
+    registry.register('extractTopOrDraw', ctx => {
+        const c = ctx.caster, count = Math.max(1, roundToInt(v(ctx.effect)));
+        for (let i = 0; i < count && c.drawPile.length; i++) {
+            const card = c.drawPile[0], extract = card.extractEffects?.length > 0;
+            if (!extract && c.hand.length >= 10) break;
+            c.drawPile.shift();
+            if (extract) ctx.engine.dismantleCard(c, card, 'deck'); else { c.hand.push(card); c.lastDrawnCard = card; }
+        }
+    });
+    registry.register('diceRollLuck', ctx => add(ctx.caster, 'luck', randomIndex(6) + 1));
+    registry.register('costReduceAttackCards', ctx => as('costReduceHandCards', ctx, { filter: 'attack' }));
+    registry.register('searchByType', ctx => registry.execute('searchDeck', ctx));
+    registry.register('revealAndTakeHighestCost', ctx => as('searchDeck', ctx, { filter: 'highestCost' }));
+    registry.register('cloneHandCard', ctx => {
+        const c = ctx.caster, e = ctx.effect, count = Math.max(1, roundToInt(v(e)));
+        for (let i = 0; i < count && c.hand.length < 10; i++) {
+            let source;
+            if (e.mode === 'chosen' && ctx.engine?.pendingDismantleTargets?.length) {
+                source = ctx.engine.pendingDismantleTargets.shift();
+                if (!c.hand.includes(source) || (e.filter && !matchesFilter(source, e.filter))) source = null;
+            }
+            if (!source) {
+                const candidates = c.hand.filter(card => card !== ctx.card && (!e.filter || matchesFilter(card, e.filter)));
+                source = candidates.length ? candidates[randomIndex(candidates.length)] : null;
+            }
+            if (!source) break;
+            const clone = cloneCard(source); clone.id = `${source.id}_TEMP_CLONE`; clone.isTemporary = true; clone.keywords ??= [];
+            if (!clone.keywords.includes('일시적')) clone.keywords.push('일시적'); c.hand.push(clone); c.lastDrawnCard = clone;
+        }
+    });
+    registry.register('diceRollShieldDamage', ctx => {
+        const roll = randomIndex(6) + 1; add(ctx.caster, 'shield', roll); ctx.engine.applyDamage(ctx.target, roll, ctx.caster);
+        const bonus = roundToInt(v(ctx.effect)); if (roll === 6 && bonus > 0) add(ctx.caster, 'luck', bonus);
+    });
+    registry.register('selfDamagePercent', ctx => as('selfDamage', ctx, { mode: 'percent' }));
+    registry.register('energyFromShield', ctx => as('convertResource', ctx, { from: 'shield', to: 'energy' }));
+    registry.register('energyToHeal', ctx => as('convertResource', ctx, { from: 'energy', to: 'heal' }));
+    registry.register('energyFromShieldChunk', ctx => {
+        const size = Math.max(1, roundToInt(v(ctx.effect))), chunks = Math.trunc(ctx.caster.shield / size);
+        if (chunks > 0) { ctx.caster.shield -= chunks * size; add(ctx.caster, 'energy', chunks); }
+    });
+    registry.register('damageIfHandEmpty', ctx => { if (!ctx.caster.hand.length) ctx.engine.applyDamage(ctx.target, Math.max(1, roundToInt(v(ctx.effect))), ctx.caster); });
+    registry.register('damageIfConsecutiveLuck', ctx => {
+        if (ctx.caster.consecutiveLuck >= 1) { const value = roundToInt(v(ctx.effect) * ctx.caster.consecutiveLuck); if (value > 0) ctx.engine.applyDamage(ctx.target, value, ctx.caster); }
+    });
+    for (const [type, source] of [['damagePlusByLuckyThisBattle', 'luckyThisBattle'], ['damagePlusByUnluckyThisBattle', 'unluckyThisBattle'], ['damageByLuckStack', 'luck']])
+        registry.register(type, ctx => { ctx.effect.scaling ??= { source, multiplier: 1 }; as('scaledEffect', ctx, { action: 'damage' }); });
+    registry.register('nextGambleBonusChance', ctx => { turn(ctx.caster).gambleBonusChance = Math.max(tv(ctx.caster, 'gambleBonusChance'), Math.max(0, roundToInt(v(ctx.effect)))); });
+    registry.register('zeroCostHandCard', ctx => as('costReduceHandCards', ctx, { mode: 'set', value: 0 }));
+    registry.register('costReductionRandom', ctx => as('costReduceHandCards', ctx, { mode: 'random' }));
+    registry.register('restoreMaxEnergy', ctx => as('modifyStat', ctx, { stat: 'energy', target: 'self', source: 'baseEnergy', mode: 'set' }));
+    registry.register('discardTopAndGainShieldByCost', ctx => registry.execute('discardTopAndShield', ctx));
+    registry.register('damageMaxPercent', ctx => {
+        const e = ctx.effect; let value = roundToInt(ctx.target.maxHp * v(e) / 100);
+        if (e.scaling?.max > 0) value = Math.min(value, e.scaling.max); if (e.scaling?.min > 0) value = Math.max(value, e.scaling.min);
+        if (value > 0) ctx.engine.applyDamage(ctx.target, value, ctx.caster);
+    });
+    registry.register('lostHpDamageByOverclock', ctx => {
+        const e = ctx.effect, lost = Math.max(0, ctx.target.maxHp - ctx.target.hp);
+        const rate = v(e) + (e.scaling ? computeScalingValue(e.scaling, ctx) : 0); let value = roundToInt(lost * rate);
+        if (e.scaling?.max > 0) value = Math.min(value, e.scaling.max); if (e.scaling?.min > 0) value = Math.max(value, e.scaling.min);
+        if (value > 0) attackDamage(ctx, value);
+    });
+    registry.register('damageIfUnluckyThisTurn', ctx => { const value = roundToInt(v(ctx.effect)); if (tv(ctx.caster, 'unluckyThisTurn') > 0 && value > 0) ctx.engine.applyDamage(ctx.target, value, ctx.caster); });
+    registry.register('restoreCardCost', ctx => { if (ctx.card) ctx.card.cost = roundToInt(v(ctx.effect)); });
+    registry.register('shieldByHpPercent', ctx => { const value = roundToInt(ctx.caster.maxHp * v(ctx.effect) / 100); if (value > 0) add(ctx.caster, 'shield', value); });
+    registry.register('shieldByLastHpLoss', ctx => { add(ctx.caster, 'shield', Math.max(0, tv(ctx.caster, 'lastHpLoss'))); turn(ctx.caster).lastHpLoss = 0; });
+    registry.register('damageReduction', ctx => { turn(ctx.caster).damageReductionThisTurn = v(ctx.effect) / 100; });
+    registry.register('invincible', ctx => { turn(ctx.caster).invincibleThisTurn = true; });
+    registry.register('evadeNextHit', ctx => addTurn(ctx.caster, 'evadeNextHits', Math.max(1, roundToInt(v(ctx.effect)))));
+    registry.register('nextAttackBonus', ctx => addTurn(ctx.caster, 'nextAttackBonus', roundToInt(v(ctx.effect))));
+    registry.register('retaliateOnHit', ctx => { const value = roundToInt(v(ctx.effect)); if (value > 0) addTurn(ctx.caster, 'retaliateOnHitDamage', value); });
+    registry.register('virusByDebuff', ctx => { const value = roundToInt((n(ctx.target, 'weakness') + n(ctx.target, 'corrosion')) * v(ctx.effect)); if (value > 0) add(ctx.target, 'virus', value); });
+    registry.register('costReductionPerOverclock', ctx => {
+        const reduction = n(ctx.caster, 'overclockStacks') * roundToInt(v(ctx.effect)); if (reduction > 0) for (const card of ctx.caster.hand) card.cost = Math.max(0, card.cost - reduction);
+    });
+    registry.register('setHpScale', ctx => { ctx.caster.hp = Math.max(0, Math.min(ctx.caster.maxHp, roundToInt(ctx.caster.hp * v(ctx.effect)))); });
+    registry.register('setHpScaleStoreLoss', ctx => { const before = ctx.caster.hp; registry.execute('setHpScale', ctx); turn(ctx.caster).lastHpLoss = Math.max(0, before - ctx.caster.hp); });
+    registry.register('setEnemyHpScale', ctx => { ctx.target.hp = Math.max(0, Math.min(ctx.target.maxHp, roundToInt(ctx.target.hp * v(ctx.effect)))); });
+    registry.register('dismantleAllAndVoidRecall', ctx => {
+        const c = ctx.caster; (c.rollbackStoredHand ??= []).push(...c.hand); c.hand.length = 0;
+        const count = ctx.effect.recallCount > 0 ? ctx.effect.recallCount : 1;
+        for (let i = 0; i < count && c.voidPile.length && c.hand.length < 10; i++) { const card = c.voidPile.pop(); card.isTemporary = true; c.hand.push(card); }
+    });
+    registry.register('preventSelfDamageIfOverclock', ctx => { if (n(ctx.caster, 'overclockStacks') >= (ctx.effect.threshold > 0 ? ctx.effect.threshold : 1)) turn(ctx.caster).preventNextSelfDamage = true; });
+}

@@ -10,6 +10,9 @@
  */
 
 import { getAllCards, getCardsByPack } from './cards.js';
+import { newWorldDataVersion } from './newworld-cards.js';
+
+export const LEARNING_RULESET_VERSION = 'newworld-2026-10-15';
 
 /**
  * 티어별 기대 밸류 Baseline
@@ -55,6 +58,7 @@ export class CardAI {
         this.learningRate = 0.2;
 
         this._initWeights();
+        this.canonicalCardIds = new Set(this.cardWeights.keys());
     }
 
     /**
@@ -183,22 +187,9 @@ export class CardAI {
         }
 
         const hand = state.player.hand;
-        const energy = state.player.energy;
-
-        const overclockStacks = state.player.overclockStacks || 0;
         const playable = hand
             .map((card, i) => ({ card, index: i }))
-            .filter(({ card }) => {
-                const effectiveCost = card.costScaling
-                    ? card.cost + overclockStacks * card.costScaling.multiplier
-                    : card.cost;
-                if (effectiveCost > energy) return false;
-                if (card.playCondition) {
-                    const cond = card.playCondition;
-                    if (cond.type === 'overclockMin' && overclockStacks < cond.value) return false;
-                }
-                return true;
-            });
+            .filter(({ index }) => engine.canPlayCard(state.player, index));
 
         if (playable.length === 0) {
             return { action: 'end_turn' };
@@ -235,7 +226,8 @@ export class CardAI {
             }
 
             // 에너지 효율 (코스트당 밸류)
-            const costEfficiency = card.cost > 0 ? score / card.cost : score * 1.5;
+            const effectiveCost = engine.getEffectiveCost(card, state.player);
+            const costEfficiency = effectiveCost > 0 ? score / effectiveCost : score * 1.5;
             score = (score + costEfficiency) / 2;
 
             // 오버클럭 시너지
@@ -290,6 +282,7 @@ export class CardAI {
         const baseFactor = (outcome === 'win' ? 0.05 : -0.05) * tierMul;
 
         for (const log of result.cardUsageLog) {
+            if (!this.canonicalCardIds.has(log.cardId)) continue;
             const current = this.cardWeights.get(log.cardId) || 1;
             const baseline = TIER_BASELINES[this._getCardTier(log.cardId)] || 1;
 
@@ -334,8 +327,8 @@ export class CardAI {
             const tierLevel = this._tierFromLabel(r.enemy);
             const tierW = TIER_MATCH_WEIGHTS[tierLevel] || 1.0;
             for (const log of r.result.cardUsageLog) {
-                // 카드 플레이 로그만 집계 (상세 로그 항목은 건너뜀)
-                if (!log.cardId) continue;
+                // 특수/생성 카드와 상세 로그는 일반 카드 학습에 포함하지 않는다.
+                if (!this.canonicalCardIds.has(log.cardId)) continue;
                 if (!cardStats.has(log.cardId)) {
                     cardStats.set(log.cardId, { wins: 0, losses: 0, uses: 0, weightedUses: 0, weightedWins: 0, name: log.cardName, pack: log.pack, rarity: log.rarity });
                 }
@@ -354,6 +347,7 @@ export class CardAI {
             const isWin = r.result.winner === 'player';
             const uniqueIds = [...new Set(r.deck.map(c => c.id))];
             for (const cardId of uniqueIds) {
+                if (!this.canonicalCardIds.has(cardId)) continue;
                 if (!deckStats.has(cardId)) {
                     deckStats.set(cardId, { inclusions: 0, wins: 0, losses: 0, byTierMatch: {} });
                 }
@@ -544,6 +538,9 @@ export class CardAI {
 
     exportWeights() {
         return {
+            schemaVersion: 2,
+            rulesetVersion: LEARNING_RULESET_VERSION,
+            dataVersion: newWorldDataVersion,
             generation: this.generation,
             weights: Object.fromEntries(this.cardWeights),
             cumulativeStats: Object.fromEntries(this.cumulativeStats),
@@ -553,6 +550,10 @@ export class CardAI {
     }
 
     importWeights(data) {
+        if (data?.schemaVersion !== 2 || data.rulesetVersion !== LEARNING_RULESET_VERSION
+            || data.dataVersion !== newWorldDataVersion) {
+            throw new Error('현재 NewWorld 전투 규칙/카드 데이터와 다른 학습 파일입니다. 기존 파일은 보관하고 새로 학습해 주세요.');
+        }
         this.generation = data.generation || 0;
         this.cardWeights = new Map(Object.entries(data.weights || {}));
         this.cumulativeStats = new Map(Object.entries(data.cumulativeStats || {}));

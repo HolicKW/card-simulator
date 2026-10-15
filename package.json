@@ -1,0 +1,13 @@
+{
+  "name": "newworld-card-simulator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "sync:newworld": "node scripts/sync-newworld.mjs",
+    "check:newworld": "node scripts/sync-newworld.mjs --check"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

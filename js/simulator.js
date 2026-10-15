@@ -34,7 +34,7 @@ export class Simulator {
             generations: 10,
             deckSize: 20,
             tierLimit: 5,
-            packs: ['base', 'overclock', 'dismantle', 'russian_roulette'],
+            packs: ['base', 'overclock', 'dismantle', 'network', 'biohazard', 'russian_roulette', 'IP'],
         };
     }
 
@@ -108,30 +108,35 @@ export class Simulator {
                     const result = this.engine.runMirrorBattle(state, aiStratA, aiStratB);
 
                     // AI A가 이기면 A의 카드에 win, B의 카드에 loss
-                    const aOutcome = result.winner === 'A' ? 'win' : 'lose';
-                    const bOutcome = result.winner === 'B' ? 'win' : 'lose';
+                    const decided = result.winner === 'A' || result.winner === 'B';
+                    const aOutcome = decided ? (result.winner === 'A' ? 'win' : 'lose') : 'draw';
+                    const bOutcome = decided ? (result.winner === 'B' ? 'win' : 'lose') : 'draw';
 
                     // ─── 시너지 데이터 수집 (승리 덱의 카드 조합 추적) ───
                     const winDeck = result.winner === 'A' ? deckA : deckB;
                     const loseDeck = result.winner === 'A' ? deckB : deckA;
-                    this._trackSynergy(winDeck, true);
-                    this._trackSynergy(loseDeck, false);
+                    if (decided) {
+                        this._trackSynergy(winDeck, true);
+                        this._trackSynergy(loseDeck, false);
+                    }
 
                     // ─── 팩 교차 분석 (덱의 팩 구성 추적) ───
-                    this._trackPackCombo(deckA, aOutcome === 'win');
-                    this._trackPackCombo(deckB, bOutcome === 'win');
+                    if (decided) {
+                        this._trackPackCombo(deckA, aOutcome === 'win');
+                        this._trackPackCombo(deckB, bOutcome === 'win');
+                    }
 
                     // 학습: A 사이드 사용 카드 (고티어 매치일수록 가중치 큼)
-                    this.ai.updateWeights({ cardUsageLog: result.cardUsageLogA }, aOutcome, tc.tier);
+                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogA }, aOutcome, tc.tier);
                     // 학습: B 사이드 사용 카드
-                    this.ai.updateWeights({ cardUsageLog: result.cardUsageLogB }, bOutcome, tc.tier);
+                    if (decided) this.ai.updateWeights({ cardUsageLog: result.cardUsageLogB }, bOutcome, tc.tier);
 
                     // A 사이드 결과: A가 이기면 win, B가 이기면 lose
                     genResults.push({
                         game: game + 1,
                         enemy: tc.label,
                         result: {
-                            winner: result.winner === 'A' ? 'player' : 'enemy',
+                            winner: decided ? (result.winner === 'A' ? 'player' : 'enemy') : 'draw',
                             turns: result.turns,
                             cardUsageLog: result.cardUsageLogA,
                             playerFinalHp: result.playerAHp,
@@ -145,7 +150,7 @@ export class Simulator {
                         game: game + 1,
                         enemy: tc.label,
                         result: {
-                            winner: result.winner === 'B' ? 'player' : 'enemy',
+                            winner: decided ? (result.winner === 'B' ? 'player' : 'enemy') : 'draw',
                             turns: result.turns,
                             cardUsageLog: result.cardUsageLogB,
                             playerFinalHp: result.playerBHp,
@@ -164,6 +169,7 @@ export class Simulator {
 
                             tierMatch: tc.label,
                             winner: result.winner,
+                            termination: result.termination,
                             turns: result.turns,
                             playerAHp: result.playerAHp,
                             playerBHp: result.playerBHp,
@@ -191,7 +197,8 @@ export class Simulator {
                 }
             }
 
-            const genResult = this.ai.endGeneration(genResults);
+            const genResult = this.ai.endGeneration(genResults.filter(r => r.result.winner !== 'draw'));
+            genResult.draws = genResults.filter(r => r.result.winner === 'draw').length / 2;
             allResults.push(genResult);
 
 

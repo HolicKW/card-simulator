@@ -1,258 +1,57 @@
-# 🏗️ 카드 밸런스 시뮬레이터 — 아키텍처 문서
+# 카드 시뮬레이터 아키텍처
 
-> **목적**: 학습형 AI가 카드 게임의 밸런스를 자동 평가하는 웹 시뮬레이터
-> **실행**: `npx -y http-server . -p 8080` → `http://127.0.0.1:8080`
+## 데이터와 모듈
 
----
+```text
+NewWorld/Assets/Resources/{cards,specialCards}.json
+  → scripts/sync-newworld.mjs
+  → js/data/*.json + js/newworld-cards.js
+  → js/cards.js
 
-## 📁 파일 구조
-
-```
-card-simulator/
-├── index.html          # 메인 HTML (설정 패널, 탭 UI)
-├── index.css           # 전체 스타일 (다크 사이버펑크 테마)
-├── ARCHITECTURE.md     # 이 문서
-└── js/
-    ├── cards.js        # 카드 데이터베이스 (카드풀 + 팩 레지스트리)
-    ├── effects.js      # 키워드 이펙트 시스템 (오버클럭, 해체, 추출 등)
-    ├── engine.js       # 전투 엔진 (턴제 전투 로직)
-    ├── ai.js           # 학습형 AI (덱 빌딩 + 가중치 학습)
-    ├── simulator.js    # 시뮬레이션 컨트롤러 (대규모 자동 대전)
-    └── app.js          # UI 앱 (렌더링 + 이벤트 바인딩)
+app.js → simulator.js → engine.js → effects.js → effects-bio-gamble.js
+                     → ai.js                  → battle-rules.js
+                       engine.js → core-effects.js → effects-bio-gamble.js
 ```
 
----
+| 파일 | 역할 |
+|---|---|
+| `js/data/*.json` | NewWorld 원본 데이터 스냅샷 |
+| `js/newworld-cards.js` | 브라우저에서 정적으로 import하는 생성 데이터 |
+| `js/cards.js` | 기존 조회 API, 팩 목록, 표시용 type/rarity/name/description 변환 |
+| `js/battle-rules.js` | Unity 반올림, 키워드 조회, 명시적 카드 복제 |
+| `js/effects.js` | native CardEffect 핸들러 레지스트리와 실행 |
+| `js/effects-bio-gamble.js` | 바이러스 소모, 도박 판정/재판정/보험 |
+| `js/core-effects.js` | 설치 코어, 이벤트별 코어 트리거 |
+| `js/engine.js` | 상태, 카드 사용, 피해, 덱/해체/재구축, 턴과 승패 |
+| `js/ai.js` | 덱 구성, 합법 카드 선택, 가중치/통계 |
+| `js/simulator.js` | 세대별 대전 실행, 결과 집계, 학습 |
+| `js/app.js` | 설정과 결과 대시보드 |
+| `tests/*.test.mjs` | Node assert 기반 회귀 테스트 |
 
-## 🔗 모듈 의존도
+## 데이터 계약
 
-```
-app.js  →  simulator.js  →  engine.js  →  effects.js
-                          →  ai.js      →  cards.js
-```
+일반 카드 245장과 특수 카드 2장을 동기화합니다. 팩은 `base`, `overclock`, `dismantle`, `network`, `biohazard`, `russian_roulette`, `IP`입니다. `getAllCards()`는 일반 카드만 반환하고 `getSpecialCardById()`로 발버둥/랜섬웨어를 조회합니다.
 
-| 모듈 | 역할 | 주요 클래스 |
-|------|------|------------|
-| `cards.js` | 카드 데이터 저장소. 팩 등록/조회 API | `registerPack()`, `registerCards()`, `getAllCards()` |
-| `effects.js` | 키워드별 효과 핸들러 등록 | `EffectRegistry`, `registerCoreEffects()` |
-| `engine.js` | 턴제 전투 실행 엔진 | `BattleEngine` |
-| `ai.js` | 학습 기반 덱 빌딩 + 의사결정 | `CardAI` |
-| `simulator.js` | N판 자동 대전 + 세대별 학습 관리 | `Simulator` |
-| `app.js` | 대시보드 UI 렌더링 | `App` |
+`CardData`, `CardEffect`, `CoreEffect`, `dynamicCost`, `scaledCost` 필드는 C# 데이터 그대로 유지합니다. 기존 UI 호환을 위해 `Core`를 `power`로 표시하지만 효과는 `coreEffect`를 사용합니다. `powerEffect`, `costScaling`, `playCondition` 등 과거 별도 스키마로 변환하지 않습니다. `rawDescription`은 원문이며 `description`은 정적 UI 표시용 치환 결과입니다.
 
----
+수치를 수정할 때 NewWorld 원본을 고친 뒤 동기화합니다. 별도 기획서가 있는 경우에도 원본/스냅샷과 함께 맞춥니다. 생성 모듈만 고치면 다음 동기화에서 사라집니다.
 
-## 📦 cards.js — 카드 데이터베이스
+## 실제 전투 경로
 
-### 스키마
-```javascript
-{
-  id: 'OC_006',           // 고유 ID (팩접두사_번호)
-  name: '피를 머금은 톱니', // 카드 이름
-  pack: 'overclock',       // 소속 팩 ID
-  type: 'attack',          // attack | skill | power
-  rarity: 'common',        // common | uncommon | rare | epic | unique | legendary
-  tier: 1,                 // 해금 티어 (1~5)
-  cost: 1,                 // 에너지 코스트
-  keywords: ['overclock'],  // 키워드 태그
-  effects: [...],           // 이펙트 배열
-  description: '...'        // 설명 텍스트
-}
-```
+`Simulator`는 `createMirrorBattleState()`와 `runMirrorBattle()`을 사용합니다. 양쪽 멀리건 이후 각 턴은 `_mirrorPlayerTurn()`을 통해 실행합니다. `_mirrorPlayCard()`와 호환용 `playCard()`는 같은 카드 실행 규칙을 사용합니다.
 
-### 등록된 팩
-| 팩 ID | 이름 | 카드 수 |
-|-------|------|---------|
-| `base` | 기본 공용 카드 | 40장 |
-| `overclock` | 오버클럭 코어 팩 | 40장 |
-| `dismantle` | 해체/재구축 팩 | 40장 |
-| `network` | 네트워크 프로토콜 팩 | 40장 |
-| `biohazard` | 바이오 해저드 팩 | 40장 |
-| `russian_roulette` | 러시안 룰렛팩 | 40장 |
+카드 선택 가능 여부는 `engine.canPlayCard(entity,index)`, 실제 소모량은 `engine.getEffectiveCost(card,entity)`가 결정합니다. AI가 사용 조건/비용을 따로 구현하지 않습니다.
 
-### 새 팩 추가
-```javascript
-registerPack('newpack', { name: '새 팩', description: '...', totalCards: 45 });
-registerCards([ /* 카드 객체 배열 */ ]);
-```
+카드 사용은 비용/카운터 → 기존 스택 기준 컨텍스트 → 프로토콜 → 본 효과 → 스택 증가 → 축적/코어 → 마지막 카드 기록 → 설치/재구축/보이드 → 승패 순서입니다. `protocolOverride`는 성공한 프로토콜이 기본 효과를 대체합니다. 재구축은 같은 카드 인스턴스의 횟수를 줄여 손으로 되돌립니다.
 
----
+`entity.turn`에는 한 턴 동안만 유효한 카운터/버프를 보관합니다. 네트워크 스택, 이전 카드, 프로토콜 바이패스, 설치 코어 등 전투 지속 상태와 분리합니다. 덱 영역은 `drawPile`, `hand`, `voidPile`, `activeCores`입니다.
 
-## ⚡ effects.js — 이펙트 시스템
+일반 피해는 무적/회피/감소/긴급 회피/실드/반격/사망을 처리합니다. 직접 HP 차감과 일반 피해를 구분하며, 전투가 끝나면 다음 효과 실행을 중단합니다. 반올림은 `Mathf.RoundToInt`의 반올림(.5에서 짝수)을 따릅니다.
 
-플러그인 패턴으로 키워드별 효과 핸들러를 등록.
+턴 시작은 에너지/카운터 초기화, 상대 부식에 의한 실드 감소, 부족한 손패 드로우, 발버둥/랜섬웨어, 지연 효과, 오버클럭 감소, 코어 순서입니다. 턴 종료는 HP 대가, 임시 카드, 지연 효과, 코어, 약화 감소, 롤백 손패 복구를 처리합니다.
 
-### 지원 이펙트 타입
-| 타입 | 설명 |
-|------|------|
-| `damage` | 대상에게 피해 (힘 적용) |
-| `multiHit` | 다중 타격 |
-| `shield` | 방어도 획득 |
-| `shieldBreak` | 적 방어도 감소 |
-| `heal` | 체력 회복 |
-| `selfDamage` | 자해 |
-| `draw` | 카드 드로우 |
-| `energy` | 에너지 획득 |
-| `strength` | 힘 버프 |
-| `weak` | 약화 디버프 |
-| `overload` | 과부하 (다음 턴 에너지 감소) |
-| `overclock` | 오버클럭 스택 증가 |
-| `overclockReduce` | 오버클럭 스택 감소 |
-| `dismantle` | 해체 (카드 영구 소멸) |
-| `rebuild` | 재구축 (해체 후 재사용) |
-| `extract` | 추출 (해체 시 보너스 효과) |
-| `conditional` | 조건부 효과 (체력 조건 등) |
+## 학습과 한계
 
-### 새 이펙트 추가
-```javascript
-registry.register('newKeyword', (ctx) => {
-  // ctx.state, ctx.caster, ctx.target, ctx.card, ctx.effect, ctx.engine
-});
-```
+AI의 티어 Baseline/가중치, 덱 구성, 매치 조합, 랜덤 선공은 분석 정책입니다. Unity EnemyAI의 행동 순서를 재현하지 않습니다. 최대 30회 행동/200라운드의 기본 안전 한도가 있으며 최대 라운드 도달은 `winner: 'draw'`, `termination: 'turn_limit'`로 기록합니다. 무승부를 임의 승패로 학습하지 않습니다.
 
----
-
-## ⚔️ engine.js — 전투 엔진 (809줄)
-
-### 전투 흐름 (PvE)
-```
-createBattleState() → runFullBattle()
-  ├─ 멀리건 (_doMulligan)
-  └─ 루프 (최대 50턴):
-      ├─ 턴 시작: 에너지 리셋, 드로우 5장, 파워 발동
-      ├─ 플레이어 턴 (_playerTurn): AI가 카드 선택 → playCard()
-      ├─ 적 턴 (_enemyTurn): 패턴 기반 공격/방어
-      └─ 승패 판정
-```
-
-### 전투 흐름 (AI vs AI 미러매치)
-```
-createMirrorBattleState() → runMirrorBattle()
-  ├─ 양쪽 멀리건 (_doMirrorMulligan)
-  └─ 루프 (최대 50턴):
-      ├─ A 턴: 에너지·드로우 → AI A가 카드 플레이
-      ├─ B 턴: 에너지·드로우 → AI B가 카드 플레이
-      ├─ 턴별 로그 기록 (카드명, 피해량, HP 변화)
-      └─ 승패 판정
-```
-
-### 주요 메서드
-| 메서드 | 설명 |
-|--------|------|
-| `createBattleState(deck, enemy)` | PvE 전투 상태 생성 |
-| `runFullBattle(state, ai)` | PvE 전투 자동 실행 |
-| `createMirrorBattleState(deckA, deckB)` | 미러매치 상태 생성 |
-| `runMirrorBattle(state, aiA, aiB)` | 미러매치 자동 실행 + 턴 로그 |
-| `playCard(state, index)` | 카드 사용 (효과 적용) |
-| `applyDamage(target, amount)` | 피해 계산 (방어도 → 체력) |
-| `dismantleCard(entity)` | 카드 해체 (보이드로 소멸) |
-
----
-
-## 🧠 ai.js — 학습형 AI (453줄)
-
-### 핵심 개념
-
-**티어 Baseline 시스템**: 각 티어별 기대 가중치를 설정하고, 실전 성과 대비 편차로 카드를 평가.
-
-```javascript
-TIER_BASELINES = { 1: 1.0, 2: 1.5, 3: 2.2, 4: 3.2, 5: 4.5 }
-RARITY_MULTIPLIER = { common: 0.8, rare: 1.0, epic: 1.3, unique: 1.6, legendary: 2.0 }
-```
-
-### 덱 빌딩 (`buildDeck`)
-1. **탐색 보장**: 누적 사용 10회 미만 카드를 덱 절반에 강제 투입 (모든 카드 최소 10회 사용 보장)
-2. **희귀도 배수**: 커먼 ×5, 레어 x 4, 에픽 ×3, 유니크 ×2,레전더리 ×1 → 커먼 중복 넣기 쉬움
-3. **가중치 선택**: sigmoid(가중치 - baseline) 확률로 나머지 슬롯 채움
-4. **Power 제한**: 동일 power 카드 1장만
-
-### 학습 사이클
-```
-전투 결과 → updateWeights() → endGeneration()
-  ├─ 카드별 승률 계산
-  ├─ 티어 그룹 내 상대 순위 ELO 조정
-  ├─ 누적 통계(cumulativeStats) 업데이트
-  └─ 밸류 티어 판정 (S/A/B/C/D/F/?)
-```
-
-### 밸류 티어 기준
-| 등급 | Baseline 대비 비율 | 의미 |
-|------|-------------------|------|
-| S | ≥ 150% | 해당 티어 내 사기급 |
-| A | ≥ 120% | 강력 |
-| B | ≥ 90% | 적정 |
-| C | ≥ 65% | 약간 부족 |
-| D | ≥ 45% | 약체 |
-| F | < 45% | 사용 가치 없음 |
-| ? | 사용 0회 | 미평가 |
-
----
-
-## 🔄 simulator.js — 시뮬레이션 컨트롤러 (367줄)
-
-### 두 가지 모드
-
-#### 1. PvE 모드 (`run()`)
-- AI가 덱을 빌드 → 패턴 기반 적과 대결
-- 적 설정: 티어별 HP + 고정 공격 패턴
-- 세대당 N판 반복 → 학습 → 다음 세대
-
-#### 2. AI vs AI 미러매치 (`runMirrorMode()`)
-- 두 AI가 각자 덱 빌드 → 대칭 전투
-- 티어별 매칭: T1, T1-2, T1-3, T1-4, T1-5
-- 양쪽 모두 학습 (승자 카드 +, 패자 카드 -)
-
-### 전투 로그
-- **세대당 최대 20건** 샘플링 저장
-- **최신 10세대분만** 유지 (오래된 것 자동 제거)
-- PvE: 덱 구성 + 사용 카드
-- 미러: 양쪽 덱 + 턴별 상세 로그 (카드명, 피해, HP 변화)
-
-### 설정값 (config)
-```javascript
-{
-  gamesPerGeneration: 100,  // 세대당 게임 수
-  generations: 10,           // 학습 세대 수
-  deckSize: 20,              // 덱 크기 (10~40)
-  tierLimit: 5,              // 티어 제한 (1~5)
-  packs: ['base', ...]       // 사용할 팩 목록
-}
-```
-
----
-
-## 🖥️ app.js — 대시보드 UI (608줄)
-
-### 탭 구조
-| 탭 | 내용 | 렌더 메서드 |
-|----|------|------------|
-| 🏆 밸류 티어 리스트 | S~F+? 등급별 카드 목록 | `_renderTierList()` |
-| ⚠️ 밸런스 경고 | OP/UP 카드 감지 | `_renderWarnings()` |
-| 📊 팩별 통계 | 팩별 승률/사용율 | `_renderPackStats()` |
-| 📈 학습 그래프 | 세대별 승률/카드수 추이 | `_renderLearningGraph()` |
-| ⚔️ 전투 로그 | 전투별 상세 정보 (아코디언) | `_renderBattleLog()` |
-| 🃏 카드 풀 | 등록된 전체 카드 목록 | `_renderCardPool()` |
-
-### 전투 로그 렌더링
-- **PvE**: `_renderPveEntry()` — 덱 + 사용 카드
-- **미러매치**: `_renderMirrorEntry()` — 🔵A vs 🔴B 양쪽 덱 + 턴별 로그
-
-### 데이터 내보내기/불러오기
-- `_exportData()` → JSON 다운로드 (가중치, 통계, 학습 이력)
-- `_importData()` → JSON 업로드로 학습 상태 복원
-
----
-
-## 🔧 확장 가이드
-
-### 새 카드팩 추가
-1. `cards.js`에 `registerPack()` + `registerCards()` 호출
-2. 끝. UI에 자동 반영.
-
-### 새 키워드/이펙트 추가
-1. `effects.js`의 `registerCoreEffects()` 안에 `registry.register()` 추가
-2. `engine.js`의 `playCard()`에서 해당 키워드 처리 (필요 시)
-
-### 새 시뮬레이션 모드 추가
-1. `simulator.js`에 새 메서드 추가 (e.g., `runTournament()`)
-2. `app.js`의 `_startSimulation()`에 모드 분기 추가
-3. `index.html`의 `#sim-mode` 셀렉트에 옵션 추가
+테스트는 `node tests/run.mjs`, 원본 데이터 대조는 `node scripts/sync-newworld.mjs --check`로 실행합니다. 브라우저는 빌드 없이 정적 HTTP 서버로 실행합니다. Unity의 장면 연결이나 런타임은 별도로 확인해야 합니다.

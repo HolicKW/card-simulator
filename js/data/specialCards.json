@@ -1,0 +1,45 @@
+{
+  "cards": [
+    {
+      "id": "STATUS_RANSOMWARE",
+      "cardName": "랜섬웨어",
+      "pack": "special",
+      "type": "Skill",
+      "rarity": "Common",
+      "tier": 0,
+      "cost": 1,
+      "keywords": [
+        "ransomware",
+        "일시적"
+      ],
+      "effects": [],
+      "description": "[랜섬웨어] 턴 시작 시 손패에 있으면 5 피해를 받습니다. 이 피해는 발동할 때마다 5 증가합니다. 사용하면 제거됩니다.",
+      "artworkPath": "ArtWork/Ransomware"
+    },
+    {
+      "id": "STATUS_STRUGGLE",
+      "cardName": "발버둥",
+      "pack": "special",
+      "type": "Attack",
+      "rarity": "Common",
+      "tier": 0,
+      "cost": 0,
+      "keywords": [],
+      "effects": [
+        {
+          "type": "selfDamage",
+          "mode": "percent",
+          "value": 10,
+          "target": "self"
+        },
+        {
+          "type": "fixedDamage",
+          "value": 10,
+          "target": "enemy"
+        }
+      ],
+      "description": "내 최대 체력의 {0}%를 잃고, 적에게 고정 피해 {1}을 줍니다. 턴 시작 시 손패에 남아있으면 최대 체력의 10% 피해를 입습니다.",
+      "artworkPath": "ArtWork/Empty_001"
+    }
+  ]
+}
