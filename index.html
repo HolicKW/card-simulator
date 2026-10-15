@@ -4,169 +4,230 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
   <title>카드 밸런스 시뮬레이터</title>
-  <meta name="description" content="사이버펑크 카드 전투 게임 밸런스 시뮬레이션 앱 — 학습형 AI 기반 카드 가치 분석">
+  <meta name="description" content="신디게이트 서울 카드 전투 밸런스 시뮬레이션 — 학습형 AI 기반 카드 가치 분석">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
   <link rel="stylesheet" href="index.css">
 </head>
 
 <body>
-  <div class="app-container">
+  <!-- 라인 아이콘 스프라이트 (Lucide, ISC License) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-spade" viewBox="0 0 24 24"><path d="M5 9c-1.5 1.5-3 3.2-3 5.5A5.5 5.5 0 0 0 7.5 20c1.8 0 3-.5 4.5-2 1.5 1.5 2.7 2 4.5 2a5.5 5.5 0 0 0 5.5-5.5c0-2.3-1.5-4-3-5.5l-7-7-7 7Z"/><path d="M12 18v4"/></symbol>
+    <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-7.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.972a4 4 0 0 1 3.6 2.2"/><path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></symbol>
+    <symbol id="i-swords" viewBox="0 0 24 24"><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" x2="19" y1="19" y2="13"/><line x1="16" x2="20" y1="16" y2="20"/><line x1="19" x2="21" y1="21" y2="19"/><polyline points="14.5 6.5 18 3 21 3 21 6 17.5 9.5"/><line x1="5" x2="9" y1="14" y2="18"/><line x1="7" x2="4" y1="17" y2="20"/><line x1="3" x2="5" y1="19" y2="21"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
+  </svg>
+  <div class="app-shell">
 
-    <!-- Header -->
-    <header class="app-header">
-      <h1 class="app-title">Card Balance Simulator</h1>
-      <p class="app-subtitle">학습형 AI 기반 카드 밸런스 분석 시뮬레이터</p>
-    </header>
+    <!-- Sidebar: 분석 페이지 내비게이션 + 데이터 -->
+    <aside class="sidebar">
+      <div class="workspace">
+        <span class="workspace-icon"><svg class="icon" aria-hidden="true"><use href="#i-spade"/></svg></span>
+        <div>
+          <strong>Card Balance</strong>
+          <span>신디게이트 서울</span>
+        </div>
+      </div>
 
-    <!-- Control Panel -->
-    <div class="control-panel">
-      <!-- 시뮬레이션 설정 -->
-      <div class="control-section">
-        <h3>⚙️ 시뮬레이션 설정</h3>
-        <div class="config-grid">
-          <div class="config-item">
-            <label>세대당 게임 수 <span class="config-hint">(×5 티어 매칭)</span></label>
-            <input type="number" id="games-per-gen" value="100" min="10" max="1000" step="10">
+      <nav class="nav" aria-label="분석 결과">
+        <p class="nav-label">분석</p>
+        <button class="tab-btn active" data-tab="tierlist"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg>밸류 티어</button>
+        <button class="tab-btn" data-tab="warnings"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>밸런스 경고</button>
+        <button class="tab-btn" data-tab="synergy"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>시너지 분석</button>
+        <button class="tab-btn" data-tab="crosspack"><svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg>팩 교차</button>
+        <button class="tab-btn" data-tab="heatmap"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>티어 히트맵</button>
+        <button class="tab-btn" data-tab="packs"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>팩별 통계</button>
+        <button class="tab-btn" data-tab="graph"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>학습 그래프</button>
+        <button class="tab-btn" data-tab="battlelog"><svg class="icon" aria-hidden="true"><use href="#i-swords"/></svg>전투 로그</button>
+        <button class="tab-btn" data-tab="pool"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>카드 풀</button>
+      </nav>
+
+      <div class="nav nav-data">
+        <p class="nav-label">데이터</p>
+        <button class="nav-item" id="btn-export"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>학습 데이터 내보내기</button>
+        <button class="nav-item" id="btn-import"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>학습 데이터 불러오기</button>
+        <input type="file" id="import-file" accept=".json" hidden>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <div class="page">
+
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">카드 밸런스 시뮬레이터</h1>
+            <p class="page-desc">학습형 AI가 덱을 짜고 반복 대전하며 카드별 실전 가치를 측정해요.</p>
           </div>
-          <div class="config-item">
-            <label>학습 세대 수</label>
-            <input type="number" id="generations" value="10" min="1" max="50">
+          <div class="page-actions">
+            <button class="btn btn-danger" id="btn-stop" disabled>중지</button>
+            <button class="btn btn-primary" id="btn-start">시뮬레이션 시작</button>
           </div>
-          <div class="config-item">
-            <label>덱 크기</label>
-            <input type="number" id="deck-size" value="20" min="10" max="40">
+        </header>
+
+        <!-- Progress -->
+        <div class="progress-container" id="progress-container">
+          <div class="progress-track">
+            <div class="progress-bar" id="progress-bar"></div>
           </div>
-          <div class="config-item">
-            <label>티어 제한</label>
-            <select id="tier-limit">
-              <option value="1">Tier 1</option>
-              <option value="2">Tier 2</option>
-              <option value="3">Tier 3</option>
-              <option value="4">Tier 4</option>
-              <option value="5" selected>Tier 5 (전체)</option>
-            </select>
+          <div class="progress-text" id="progress-text">대기 중...</div>
+        </div>
+
+        <!-- 실행 설정 -->
+        <section class="card run-card">
+          <div class="config-grid">
+            <div class="config-item">
+              <label for="games-per-gen">세대당 게임 수</label>
+              <input type="number" id="games-per-gen" value="100" min="10" max="1000" step="10">
+              <span class="config-hint">5개 티어 매칭에 각각 적용돼요</span>
+            </div>
+            <div class="config-item">
+              <label for="generations">학습 세대 수</label>
+              <input type="number" id="generations" value="10" min="1" max="50">
+            </div>
+            <div class="config-item">
+              <label for="deck-size">덱 크기</label>
+              <input type="number" id="deck-size" value="20" min="10" max="40">
+            </div>
+            <div class="config-item">
+              <label for="tier-limit">티어 제한</label>
+              <select id="tier-limit">
+                <option value="1">Tier 1</option>
+                <option value="2">Tier 2</option>
+                <option value="3">Tier 3</option>
+                <option value="4">Tier 4</option>
+                <option value="5" selected>Tier 5 (전체)</option>
+              </select>
+            </div>
           </div>
-        </div>
-        <div class="btn-group">
-          <button class="btn btn-primary" id="btn-start">▶ 시뮬레이션 시작</button>
-          <button class="btn btn-danger" id="btn-stop" disabled>⏹ 중지</button>
-        </div>
+          <div class="pack-field">
+            <span class="field-label">카드팩</span>
+            <div id="pack-checkboxes">
+              <!-- 동적으로 채워짐 -->
+            </div>
+          </div>
+        </section>
+
+        <!-- Gen Results (실시간) -->
+        <div class="gen-results" id="gen-results"></div>
+
+        <!-- Panels -->
+        <section class="tab-panel card active" id="panel-tierlist">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg></span>밸류 티어</h2>
+            <p>카드별 실전 가치를 Baseline 대비로 S~F 등급에 배치해요. 카드에 마우스를 올리면 상세 통계가 보여요.</p>
+          </header>
+          <div id="tier-list">
+            <div class="empty-state">
+              <p>시뮬레이션을 실행하면 카드 밸류 티어 리스트가 여기에 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-warnings">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg></span>밸런스 경고</h2>
+            <p>너무 강하거나(OP) 약한(UP) 카드를 모아서 보여줘요.</p>
+          </header>
+          <div id="warnings">
+            <div class="empty-state">
+              <p>시뮬레이션 결과에서 OP/UP 카드가 감지되면 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-synergy">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg></span>시너지 분석</h2>
+            <p>함께 쓸 때 승률이 크게 오르거나 떨어지는 카드 조합이에요.</p>
+          </header>
+          <div id="synergy-analysis">
+            <div class="empty-state">
+              <p>카드 조합별 시너지/안티시너지 분석이 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-crosspack">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg></span>팩 교차</h2>
+            <p>덱에 포함된 팩 조합별 승률이에요. 혼합 덱이 순수 덱보다 압도적으로 강하면 팩 정체성이 무너졌다는 신호예요.</p>
+          </header>
+          <div id="crosspack-analysis">
+            <div class="empty-state">
+              <p>팩 구성별 승률 교차 분석이 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-heatmap">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg></span>티어 히트맵</h2>
+            <p>티어 안에서 Baseline 대비 카드 가치를 색으로 보여줘요. 빨강은 OP, 초록은 적정, 회색은 UP이에요.</p>
+          </header>
+          <div id="tier-heatmap">
+            <div class="empty-state">
+              <p>티어별 카드 밸류 히트맵이 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-packs">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></span>팩별 통계</h2>
+            <p>팩별 카드 사용 횟수와 승률이에요.</p>
+          </header>
+          <div id="pack-stats">
+            <div class="empty-state">
+              <p>팩별 카드 사용률과 승률 통계가 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-graph">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg></span>학습 그래프</h2>
+            <p>세대가 진행되면서 승률이 어떻게 바뀌는지 보여줘요.</p>
+          </header>
+          <div class="graph-container">
+            <canvas id="learning-canvas"></canvas>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-battlelog">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-swords"/></svg></span>전투 로그</h2>
+            <p>전투별 덱 구성과 턴 로그예요. 항목을 누르면 펼쳐져요.</p>
+          </header>
+          <div id="battle-log">
+            <div class="empty-state">
+              <p>시뮬레이션을 실행하면 전투별 덱 구성과 결과가 여기에 표시돼요.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel card" id="panel-pool">
+          <header class="panel-head">
+            <h2><span class="panel-icon"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg></span>카드 풀</h2>
+            <p>시뮬레이션에 쓰이는 전체 카드 목록이에요.</p>
+          </header>
+          <div id="card-pool">
+            <!-- 동적으로 채워짐 -->
+          </div>
+        </section>
+
       </div>
-
-      <!-- 카드팩 선택 & I/O -->
-      <div class="control-section">
-        <h3>📦 카드팩 선택</h3>
-        <div id="pack-checkboxes">
-          <!-- 동적으로 채워짐 -->
-        </div>
-        <div class="btn-group">
-          <button class="btn btn-secondary" id="btn-export">💾 데이터 내보내기</button>
-          <button class="btn btn-secondary" id="btn-import">📂 불러오기</button>
-          <input type="file" id="import-file" accept=".json" style="display:none">
-        </div>
-      </div>
-    </div>
-
-    <!-- Progress -->
-    <div class="progress-container" id="progress-container">
-      <div class="progress-track">
-        <div class="progress-bar" id="progress-bar"></div>
-      </div>
-      <div class="progress-text" id="progress-text">대기 중...</div>
-    </div>
-
-    <!-- Gen Results (실시간) -->
-    <div class="gen-results" id="gen-results"></div>
-
-    <!-- Result Tabs -->
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="tierlist">🏆 밸류 티어</button>
-      <button class="tab-btn" data-tab="warnings">⚠️ 밸런스 경고</button>
-      <button class="tab-btn" data-tab="synergy">🧩 시너지 분석</button>
-      <button class="tab-btn" data-tab="crosspack">🔀 팩 교차</button>
-      <button class="tab-btn" data-tab="heatmap">🗺️ 티어 히트맵</button>
-      <button class="tab-btn" data-tab="packs">📦 팩별 통계</button>
-      <button class="tab-btn" data-tab="graph">📈 학습 그래프</button>
-      <button class="tab-btn" data-tab="battlelog">⚔️ 전투 로그</button>
-      <button class="tab-btn" data-tab="pool">🃏 카드 풀</button>
-    </div>
-
-    <!-- Tab Panels -->
-    <div class="tab-panel active" id="panel-tierlist">
-      <div id="tier-list">
-        <div class="empty-state">
-          <div class="icon">🏆</div>
-          <p>시뮬레이션을 실행하면 카드 밸류 티어 리스트가 여기에 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-synergy">
-      <div id="synergy-analysis">
-        <div class="empty-state">
-          <div class="icon">🧩</div>
-          <p>카드 조합별 시너지/안티시너지 분석이 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-crosspack">
-      <div id="crosspack-analysis">
-        <div class="empty-state">
-          <div class="icon">🔀</div>
-          <p>팩 구성별 승률 교차 분석이 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-heatmap">
-      <div id="tier-heatmap">
-        <div class="empty-state">
-          <div class="icon">🗺️</div>
-          <p>티어별 카드 밸류 히트맵이 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-warnings">
-      <div id="warnings">
-        <div class="empty-state">
-          <div class="icon">⚠️</div>
-          <p>시뮬레이션 결과에서 OP/UP 카드가 감지되면 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-packs">
-      <div id="pack-stats">
-        <div class="empty-state">
-          <div class="icon">📦</div>
-          <p>팩별 카드 사용률과 승률 통계가 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-graph">
-      <div class="graph-container">
-        <h3>세대별 승률 변화</h3>
-        <canvas id="learning-canvas"></canvas>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-battlelog">
-      <div id="battle-log">
-        <div class="empty-state">
-          <div class="icon">⚔️</div>
-          <p>시뮬레이션을 실행하면 전투별 덱 구성과 결과가 여기에 표시됩니다.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="panel-pool">
-      <div id="card-pool">
-        <!-- 동적으로 채워짐 -->
-      </div>
-    </div>
+    </main>
 
   </div>
 

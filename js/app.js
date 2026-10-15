@@ -7,6 +7,20 @@
 import { Simulator } from './simulator.js';
 import { getAllCards, getAllPacks } from './cards.js';
 
+const TIER_COLORS = {
+  S: '#F04452', A: '#FF8A00', B: '#FFB800',
+  C: '#03B26C', D: '#3182F6', F: '#8B95A1', '?': '#B0B8C1'
+};
+
+// 승률(%) → 막대 색: 55% 이상 초록, 45% 이하 빨강, 그 사이 회색
+const rateColor = (pct) => (pct >= 55 ? '#03B26C' : pct <= 45 ? '#F04452' : '#B0B8C1');
+
+// 카드 아트 썸네일 (scripts/export-card-art.ps1 로 생성). 이미지가 없으면 회색 자리만 남긴다
+const cardArtHTML = (id, extraClass = '', lazy = true) => `
+  <div class="card-art ${extraClass}">
+    <img src="assets/cards/${id}.jpg" alt="" ${lazy ? 'loading="lazy" ' : ''}decoding="async" onerror="this.remove()">
+  </div>`;
+
 class App {
   constructor() {
     this.simulator = new Simulator();
@@ -16,8 +30,11 @@ class App {
   }
 
   init() {
+    // 팝오버에서 카드 효과 설명·키워드를 찾기 위한 원본 카드 정보
+    this._cardInfo = new Map(getAllCards().map(c => [String(c.id), c]));
     this._renderUI();
     this._bindEvents();
+    this._bindCardPopover();
     this._renderCardPool();
   }
 
@@ -74,7 +91,7 @@ class App {
     const progressContainer = document.getElementById('progress-container');
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    startBtn.textContent = '⏳ 시뮬레이션 중...';
+    startBtn.textContent = '시뮬레이션 중...';
     if (progressContainer) progressContainer.classList.add('active');
 
     // 이전 결과 UI 초기화
@@ -113,7 +130,7 @@ class App {
     this.isRunning = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    startBtn.textContent = '▶ 시뮬레이션 시작';
+    startBtn.textContent = '시뮬레이션 시작';
     if (progressContainer) progressContainer.classList.remove('active');
   }
 
@@ -124,7 +141,7 @@ class App {
     const stopBtn = document.getElementById('btn-stop');
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    startBtn.textContent = '▶ 시뮬레이션 시작';
+    startBtn.textContent = '시뮬레이션 시작';
   }
 
   _updateProgress(p) {
@@ -211,31 +228,107 @@ class App {
       tiers[card.valueTier]?.push(card);
     }
 
-    const tierColors = {
-      S: '#ff4757', A: '#ff6b35', B: '#ffa502',
-      C: '#2ed573', D: '#1e90ff', F: '#747d8c', '?': '#4a5568'
-    };
+    // 팝오버가 카드 id로 전체 통계를 찾도록 보관 (히트맵도 같이 사용)
+    this._cardStats = new Map(tierList.map(c => [String(c.id), c]));
 
     container.innerHTML = Object.entries(tiers).map(([tier, cards]) => `
       <div class="tier-row">
-        <div class="tier-label" style="background: ${tierColors[tier]}">${tier}</div>
+        <div class="tier-label" style="--tier: ${TIER_COLORS[tier]}">${tier}</div>
         <div class="tier-cards">
-          ${cards.map(c => {
-            const tierMatchStr = c.byTierMatch && Object.keys(c.byTierMatch).length > 0
-              ? '\n── 티어별 덱 승률 ──\n' + Object.entries(c.byTierMatch)
-                  .sort(([a], [b]) => a.localeCompare(b))
-                  .map(([tm, d]) => `${tm}: ${d.winRate != null ? d.winRate + '%' : '?'} (${d.inclusions}판)`)
-                  .join('\n')
-              : '';
-            return `
-            <div class="tier-card ${c.rarity}" title="${c.name}\n팩: ${c.pack} | 희귀도: ${c.rarity}\n코스트: ${c.cost} | 티어: T${c.tier}\nBaseline 비율: ${Math.round((c.ratio || 0) * 100)}% | 가중치: ${c.weight}\n── 사용 통계 ──\n덱 편입: ${c.deckInclusions || 0}회 | 실사용: ${c.totalUses || 0}회\n사용률: ${c.playRate != null ? c.playRate + '%' : 'N/A'} | 게임당 평균: ${c.avgPlaysPerGame != null ? c.avgPlaysPerGame + '회' : 'N/A'}\n플레이 승률: ${c.winRate != null ? c.winRate + '%' : 'N/A'}\n덱 승률: ${c.deckWinRate != null ? c.deckWinRate + '%' : 'N/A'}${tierMatchStr}">
+          ${cards.map(c => `
+            <div class="tier-card ${c.rarity}" data-card="${c.id}" tabindex="0">
               <span class="card-name">${c.name}</span>
               <span class="card-weight">T${c.tier} ${Math.round((c.ratio || 0) * 100)}%</span>
             </div>
-          `}).join('')}
+          `).join('')}
         </div>
       </div>
     `).join('');
+  }
+
+  // ─── 카드 팝오버 (밸류 티어 칩 · 히트맵 셀 공용) ───
+  _bindCardPopover() {
+    const pop = document.createElement('div');
+    pop.id = 'card-popover';
+    pop.className = 'card-popover';
+    pop.setAttribute('role', 'tooltip');
+    document.body.appendChild(pop);
+
+    let anchorEl = null;
+    const show = (el) => {
+      const card = this._cardStats?.get(el.dataset.card);
+      if (!card || el === anchorEl) return;
+      anchorEl?.removeAttribute('aria-describedby');
+      anchorEl = el;
+      pop.innerHTML = this._popoverHTML(card);
+      el.setAttribute('aria-describedby', 'card-popover');
+      this._positionPopover(pop, el);
+      pop.classList.add('visible');
+    };
+    const hide = () => {
+      anchorEl?.removeAttribute('aria-describedby');
+      anchorEl = null;
+      pop.classList.remove('visible');
+    };
+    const cardOf = (e) => e.target.closest?.('[data-card]');
+
+    document.addEventListener('mouseover', (e) => { const el = cardOf(e); if (el) show(el); });
+    document.addEventListener('mouseout', (e) => { const el = cardOf(e); if (el && !el.contains(e.relatedTarget)) hide(); });
+    document.addEventListener('focusin', (e) => { const el = cardOf(e); if (el) show(el); });
+    document.addEventListener('focusout', (e) => { if (cardOf(e)) hide(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    window.addEventListener('scroll', hide, { passive: true });
+  }
+
+  _positionPopover(pop, el) {
+    const GAP = 8;
+    const MARGIN = 12;
+    const r = el.getBoundingClientRect();
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    const fitsBelow = r.bottom + GAP + h <= window.innerHeight - MARGIN;
+    const top = fitsBelow ? r.bottom + GAP : Math.max(MARGIN, r.top - GAP - h);
+    const left = Math.min(Math.max(MARGIN, r.left + r.width / 2 - w / 2), window.innerWidth - w - MARGIN);
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+  }
+
+  _popoverHTML(c) {
+    const pct = (v) => (v != null ? `${v}%` : '–');
+    const matches = Object.entries(c.byTierMatch || {}).sort(([a], [b]) => a.localeCompare(b));
+    const stats = [
+      ['플레이 승률', pct(c.winRate)],
+      ['덱 승률', pct(c.deckWinRate)],
+      ['게임당 사용', c.avgPlaysPerGame != null ? `${c.avgPlaysPerGame}회` : '–'],
+      ['AI 가중치', c.weight ?? '–'],
+      ['덱 편입', `${c.deckInclusions || 0}회`],
+      ['실사용', `${c.totalUses || 0}회`],
+    ];
+    const info = this._cardInfo.get(String(c.id));
+    return `
+      ${cardArtHTML(c.id, 'pop-art', false)}
+      <div class="pop-head">
+        <div>
+          <strong class="pop-name">${c.name}</strong>
+          <span class="pop-meta">${c.pack} · ${c.rarity} · 코스트 ${c.cost} · T${c.tier}</span>
+        </div>
+        <span class="pop-grade" style="--tier: ${TIER_COLORS[c.valueTier] || TIER_COLORS['?']}">${c.valueTier}</span>
+      </div>
+      ${info?.description ? `<p class="pop-desc">${info.description}</p>` : ''}
+      ${info?.keywords?.length ? `<div class="pop-keywords">${info.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('')}</div>` : ''}
+      <div class="pop-hero"><span>Baseline 대비</span><strong>${Math.round((c.ratio || 0) * 100)}%</strong></div>
+      <dl class="pop-stats">
+        ${stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+      </dl>
+      ${matches.length ? `
+        <div class="pop-section">티어별 덱 승률</div>
+        ${matches.map(([tm, d]) => `
+          <div class="pop-bar-row">
+            <span>${tm}</span>
+            <span class="rate-bar"><span class="rate-fill" style="width:${d.winRate ?? 0}%;background:${rateColor(d.winRate)}"></span></span>
+            <span>${pct(d.winRate)}<small>${d.inclusions}판</small></span>
+          </div>`).join('')}` : ''}
+    `;
   }
 
   _renderWarnings(warnings) {
@@ -243,13 +336,13 @@ class App {
     if (!container) return;
 
     if (warnings.length === 0) {
-      container.innerHTML = '<div class="no-warnings">⚖️ 심각한 밸런스 문제가 감지되지 않았습니다.</div>';
+      container.innerHTML = '<div class="no-warnings">심각한 밸런스 문제가 감지되지 않았습니다.</div>';
       return;
     }
 
     container.innerHTML = warnings.map(w => `
       <div class="warning-item ${w.type}">
-        <span class="warning-badge">${w.type === 'OP' ? '⚠️ OP' : '⬇️ UP'}</span>
+        <span class="warning-badge">${w.type}</span>
         <span class="warning-text">${w.message}</span>
       </div>
     `).join('');
@@ -282,83 +375,86 @@ class App {
     const canvas = document.getElementById('learning-canvas');
     if (!canvas) return;
 
+    // 고해상도 화면에서도 선명하게 그리도록 devicePixelRatio 반영
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth;
+    const H = 300;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
     const ctx = canvas.getContext('2d');
-    const W = canvas.width = canvas.parentElement.clientWidth;
-    const H = canvas.height = 300;
-
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     if (history.length < 2) return;
 
-    // 세대별 승률 그래프
     const winRates = history.map(h => h.totalGames > 0 ? h.playerWins / h.totalGames : 0.5);
-    const maxVal = 1;
-    const minVal = 0;
+    const pad = { top: 28, right: 20, bottom: 32, left: 44 };
+    const xAt = i => pad.left + (i / (winRates.length - 1)) * (W - pad.left - pad.right);
+    const yAt = v => pad.top + (1 - v) * (H - pad.top - pad.bottom);
+    const font = '"Pretendard Variable", Pretendard, sans-serif';
+    const css = getComputedStyle(document.documentElement);
+    const color = (name) => css.getPropertyValue(name).trim();
+    const tracePath = () => winRates.forEach((v, i) => (i === 0 ? ctx.moveTo(xAt(i), yAt(v)) : ctx.lineTo(xAt(i), yAt(v))));
 
-    // 배경 그리드
-    ctx.strokeStyle = 'rgba(0, 255, 255, 0.1)';
+    // 가로 눈금선 + Y축 라벨 (50%는 점선 기준선)
+    ctx.font = `500 11px ${font}`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
     ctx.lineWidth = 1;
-    for (let i = 0; i <= 10; i++) {
-      const y = H - (i / 10) * H;
+    for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+      ctx.strokeStyle = v === 0.5 ? 'rgba(240, 68, 82, 0.4)' : color('--grey-100');
+      ctx.setLineDash(v === 0.5 ? [4, 4] : []);
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
+      ctx.moveTo(pad.left, yAt(v));
+      ctx.lineTo(W - pad.right, yAt(v));
       ctx.stroke();
+      ctx.fillStyle = color('--grey-500');
+      ctx.fillText(`${v * 100}%`, pad.left - 10, yAt(v));
     }
-
-    // 50% 기준선
-    ctx.strokeStyle = 'rgba(255, 71, 87, 0.5)';
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(0, H / 2);
-    ctx.lineTo(W, H / 2);
-    ctx.stroke();
     ctx.setLineDash([]);
 
-    // 승률 라인
-    const gradient = ctx.createLinearGradient(0, 0, W, 0);
-    gradient.addColorStop(0, '#00d2ff');
-    gradient.addColorStop(1, '#3a7bd5');
-
-    ctx.strokeStyle = gradient;
-    ctx.lineWidth = 3;
+    // 라인 아래 그라데이션 영역
+    const area = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+    area.addColorStop(0, 'rgba(49, 130, 246, 0.18)');
+    area.addColorStop(1, 'rgba(49, 130, 246, 0)');
     ctx.beginPath();
+    tracePath();
+    ctx.lineTo(xAt(winRates.length - 1), H - pad.bottom);
+    ctx.lineTo(xAt(0), H - pad.bottom);
+    ctx.closePath();
+    ctx.fillStyle = area;
+    ctx.fill();
 
-    for (let i = 0; i < winRates.length; i++) {
-      const x = (i / (winRates.length - 1)) * (W - 40) + 20;
-      const y = H - ((winRates[i] - minVal) / (maxVal - minVal)) * (H - 40) - 20;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    // 승률 라인
+    ctx.strokeStyle = color('--blue');
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    tracePath();
     ctx.stroke();
 
-    // 데이터 포인트
-    for (let i = 0; i < winRates.length; i++) {
-      const x = (i / (winRates.length - 1)) * (W - 40) + 20;
-      const y = H - ((winRates[i] - minVal) / (maxVal - minVal)) * (H - 40) - 20;
-
-      ctx.fillStyle = '#00d2ff';
+    // 포인트 + 값/세대 라벨 (세대가 많으면 라벨은 최대 12개 정도만)
+    const step = Math.ceil(winRates.length / 12);
+    ctx.textAlign = 'center';
+    winRates.forEach((v, i) => {
+      const x = xAt(i);
+      const y = yAt(v);
       ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = color('--surface');
       ctx.fill();
+      ctx.stroke();
 
-      // 라벨
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.font = '11px "JetBrains Mono", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${Math.round(winRates[i] * 100)}%`, x, y - 12);
-    }
-
-    // 축 라벨
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.font = '12px "JetBrains Mono", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('세대 →', W - 60, H - 5);
-    ctx.save();
-    ctx.translate(12, H / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText('승률', 0, 0);
-    ctx.restore();
+      if (i % step !== 0 && i !== winRates.length - 1) return;
+      ctx.fillStyle = color('--grey-800');
+      ctx.font = `700 12px ${font}`;
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${Math.round(v * 100)}%`, x, y - 10);
+      ctx.fillStyle = color('--grey-500');
+      ctx.font = `500 11px ${font}`;
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${history[i].generation ?? i + 1}세대`, x, H - pad.bottom + 10);
+    });
   }
 
   // ─── 시너지 분석 탭 ───
@@ -375,11 +471,10 @@ class App {
           <tbody>
             ${data.map(s => {
         const pct = Math.round(s.winRate * 100);
-        const barColor = pct >= 55 ? '#00e676' : pct <= 45 ? '#ff5252' : '#aaa';
         return `<tr>
                 <td>${s.nameA}</td>
                 <td>${s.nameB}</td>
-                <td><span class="rate-bar"><span class="rate-fill" style="width:${pct}%;background:${barColor}"></span></span> ${pct}%</td>
+                <td><span class="rate-bar"><span class="rate-fill" style="width:${pct}%;background:${rateColor(pct)}"></span></span> ${pct}%</td>
                 <td>${s.total}건</td>
               </tr>`;
       }).join('')}
@@ -390,10 +485,10 @@ class App {
     container.innerHTML = `
       <div class="synergy-grid">
         <div class="synergy-section">
-          ${renderTable(synergies, '🟢 TOP 20 시너지 (함께 쓰면 강한 카드 조합)', 'good')}
+          ${renderTable(synergies, 'TOP 20 시너지 (함께 쓰면 강한 카드 조합)', 'good')}
         </div>
         <div class="synergy-section">
-          ${renderTable(antiSynergies, '🔴 BOTTOM 20 안티시너지 (함께 쓰면 약한 카드 조합)', 'bad')}
+          ${renderTable(antiSynergies, 'BOTTOM 20 안티시너지 (함께 쓰면 약한 카드 조합)', 'bad')}
         </div>
       </div>`;
   }
@@ -409,18 +504,15 @@ class App {
     }
 
     container.innerHTML = `
-      <h3>🔀 팩 구성별 승률</h3>
-      <p class="section-desc">덱에 포함된 팩 조합별로 승률을 분석합니다. 혼합 덱이 순수 덱보다 압도적으로 강하면 팩 정체성 붕괴 징후입니다.</p>
       <table class="analysis-table">
         <thead><tr><th>팩 구성</th><th>승률</th><th>표본</th><th>승/패</th></tr></thead>
         <tbody>
           ${packCombos.map(p => {
       const pct = Math.round(p.winRate * 100);
       const packs = p.combo.split('+').map(pk => `<span class="pack-tag">${pk}</span>`).join(' + ');
-      const barColor = pct >= 55 ? '#00e676' : pct <= 45 ? '#ff5252' : '#78909c';
       return `<tr>
               <td>${packs}</td>
-              <td><span class="rate-bar"><span class="rate-fill" style="width:${pct}%;background:${barColor}"></span></span> ${pct}%</td>
+              <td><span class="rate-bar"><span class="rate-fill" style="width:${pct}%;background:${rateColor(pct)}"></span></span> ${pct}%</td>
               <td>${p.total}건</td>
               <td>${p.wins}W / ${p.total - p.wins}L</td>
             </tr>`;
@@ -440,16 +532,15 @@ class App {
     }
 
     const getHeatColor = (ratio) => {
-      if (ratio >= 1.5) return '#ff1744';
-      if (ratio >= 1.2) return '#ff9100';
-      if (ratio >= 0.9) return '#00e676';
-      if (ratio >= 0.65) return '#448aff';
-      if (ratio >= 0.45) return '#78909c';
-      return '#37474f';
+      if (ratio >= 1.5) return '#F04452';
+      if (ratio >= 1.2) return '#FF8A00';
+      if (ratio >= 0.9) return '#03B26C';
+      if (ratio >= 0.65) return '#3182F6';
+      if (ratio >= 0.45) return '#8B95A1';
+      return '#B0B8C1';
     };
 
-    let html = '<h3>🗺️ 티어별 카드 밸류 히트맵</h3>';
-    html += '<p class="section-desc">각 티어 내에서 Baseline 대비 카드 밸류를 색상으로 시각화합니다. 빨간색=OP, 초록=적정, 회색=UP</p>';
+    let html = '';
 
     for (const tier of Object.keys(tierHeatmap).sort((a, b) => a - b)) {
       const cards = tierHeatmap[tier];
@@ -458,8 +549,8 @@ class App {
       html += `<div class="heatmap-grid">`;
       for (const card of cards) {
         const pct = card.ratio != null ? Math.round(card.ratio * 100) : '?';
-        const bg = card.ratio != null ? getHeatColor(card.ratio) : '#263238';
-        html += `<div class="heatmap-cell" style="background:${bg}" title="${card.name} (${card.pack}/${card.rarity})\nBaseline대비: ${pct}%\n덱 편입: ${card.deckInclusions || 0}회 | 실사용: ${card.totalUses}회">`;
+        const bg = card.ratio != null ? getHeatColor(card.ratio) : '#D1D6DB';
+        html += `<div class="heatmap-cell" style="--heat:${bg}" data-card="${card.id}" tabindex="0">`;
         html += `<span class="hm-name">${card.name}</span>`;
         html += `<span class="hm-grade">${card.valueTier}</span>`;
         html += `<span class="hm-pct">${pct}%</span>`;
@@ -487,7 +578,8 @@ class App {
         <h3 class="pool-pack-name">${pack}</h3>
         <div class="pool-cards">
           ${cards.map(c => `
-            <div class="pool-card ${c.rarity}">
+            <div class="pool-card ${c.rarity} type-${c.type}">
+              ${cardArtHTML(c.id, 'pool-art')}
               <div class="pool-card-header">
                 <span class="pool-card-cost">${c.cost}</span>
                 <span class="pool-card-name">${c.name}</span>
@@ -511,7 +603,7 @@ class App {
     if (!container) return;
 
     if (!battleLog || battleLog.length === 0) {
-      container.innerHTML = '<div class="empty-state"><div class="icon">⚔️</div><p>전투 기록이 없습니다.</p></div>';
+      container.innerHTML = '<div class="empty-state"><p>전투 기록이 없습니다.</p></div>';
       return;
     }
 
@@ -530,6 +622,7 @@ class App {
           <option value="all">전체</option>
           <option value="win">A 승리</option>
           <option value="lose">B 승리</option>
+          <option value="draw">미결정</option>
         </select>
       </div>
       <div id="battlelog-list"></div>
@@ -543,7 +636,8 @@ class App {
       let filtered = battleLog;
       if (gf !== 'all') filtered = filtered.filter(b => b.gen === parseInt(gf));
       if (rf === 'win') filtered = filtered.filter(b => b.winner === 'A');
-      if (rf === 'lose') filtered = filtered.filter(b => b.winner !== 'A');
+      if (rf === 'lose') filtered = filtered.filter(b => b.winner === 'B');
+      if (rf === 'draw') filtered = filtered.filter(b => b.winner === 'draw');
 
       const listEl = document.getElementById('battlelog-list');
       listEl.innerHTML = filtered.map((b, i) => {
@@ -558,11 +652,11 @@ class App {
 
   _renderMirrorEntry(b, i) {
     return `
-      <div class="battle-entry mirror ${b.winner === 'A' ? 'win' : 'lose'}" data-idx="${i}">
+      <div class="battle-entry mirror ${b.winner === 'A' ? 'win' : b.winner === 'B' ? 'lose' : 'draw'}" data-idx="${i}">
         <div class="battle-header" onclick="this.parentElement.classList.toggle('expanded')">
           <span class="battle-id">G${b.gen}-#${b.game}</span>
-          <span class="battle-result ${b.winner === 'A' ? 'win' : 'lose'}">
-            ${b.winner === 'A' ? '🔵 A 승리' : '🔴 B 승리'}
+          <span class="battle-result ${b.winner === 'A' ? 'win' : b.winner === 'B' ? 'lose' : 'draw'}">
+            ${b.winner === 'A' ? 'A 승리' : b.winner === 'B' ? 'B 승리' : '턴 제한 · 미결정'}
           </span>
           <span class="battle-enemy">${b.tierMatch}</span>
           <span class="battle-turns">${b.turns || '?'}턴</span>
@@ -572,7 +666,7 @@ class App {
         <div class="battle-detail">
           <div class="mirror-decks">
             <div class="mirror-side side-a">
-              <h4>🔵 AI A 덱 (${b.deckA.length}장) ${b.winner === 'A' ? '👑' : ''}</h4>
+              <h4>AI A 덱 (${b.deckA.length}장)${b.winner === 'A' ? ' · 승리' : ''}</h4>
               <div class="battle-deck-cards">
                 ${b.deckA.sort((a, c) => a.cost - c.cost).map(c => `
                   <span class="bdeck-card ${c.rarity}" title="${c.name}\nT${c.tier} ${c.rarity}">
@@ -584,7 +678,7 @@ class App {
               ${this._renderDetailedUsageLog(b.cardsUsedA, 'A')}
             </div>
             <div class="mirror-side side-b">
-              <h4>🔴 AI B 덱 (${b.deckB.length}장) ${b.winner === 'B' ? '👑' : ''}</h4>
+              <h4>AI B 덱 (${b.deckB.length}장)${b.winner === 'B' ? ' · 승리' : ''}</h4>
               <div class="battle-deck-cards">
                 ${b.deckB.sort((a, c) => a.cost - c.cost).map(c => `
                   <span class="bdeck-card ${c.rarity}" title="${c.name}\nT${c.tier} ${c.rarity}">
@@ -598,15 +692,15 @@ class App {
           </div>
           ${(b.turnLog || []).length > 0 ? `
             <div class="turn-log-section">
-              <h4>📜 턴별 전투 로그</h4>
+              <h4>턴별 전투 로그</h4>
               <div class="turn-log-list">
                 ${b.turnLog.map(t => `
                   <div class="turn-entry">
-                    <div class="turn-header">턴 ${t.turn} — A: ${t.hpAfter?.A?.hp || '?'}hp(🛡${t.hpAfter?.A?.shield || 0}) | B: ${t.hpAfter?.B?.hp || '?'}hp(🛡${t.hpAfter?.B?.shield || 0})</div>
+                    <div class="turn-header">턴 ${t.turn} — A: ${t.hpAfter?.A?.hp || '?'}hp · 방어 ${t.hpAfter?.A?.shield || 0} | B: ${t.hpAfter?.B?.hp || '?'}hp · 방어 ${t.hpAfter?.B?.shield || 0}</div>
                     <div class="turn-actions">
                       ${t.actions.map(a => `
                         <span class="turn-action ${a.side === 'A' ? 'side-a' : 'side-b'}">
-                          ${a.side === 'A' ? '🔵' : '🔴'} ${a.cardName}
+                          ${a.side} ${a.cardName}
                           ${a.damageDone > 0 ? `<span class="dmg">-${a.damageDone}</span>` : ''}
                           ${a.selfHpChange < 0 ? `<span class="self-dmg">${a.selfHpChange}</span>` : ''}
                           ${a.selfHpChange > 0 ? `<span class="heal">+${a.selfHpChange}</span>` : ''}
@@ -634,17 +728,17 @@ class App {
       } else if (log.type === 'info') {
         html += `<div class="log-info">${log.msg}</div>`;
       } else if (log.type === 'mulligan') {
-        html += `<div class="log-mulligan">🔄 멀리건 | 버림: ${log.discarded?.join(', ') || ''} → 뽑음: ${log.drawn?.join(', ') || ''}</div>`;
+        html += `<div class="log-mulligan">멀리건 | 버림: ${log.discarded?.join(', ') || ''} → 뽑음: ${log.drawn?.join(', ') || ''}</div>`;
       } else if (log.type === 'draw') {
-        html += `<div class="log-draw">🎴 드로우 (${log.source}): ${log.cards?.join(', ') || ''}</div>`;
+        html += `<div class="log-draw">드로우 (${log.source}): ${log.cards?.join(', ') || ''}</div>`;
       } else if (log.type === 'status') {
-        html += `<div class="log-status">⚠️ ${log.effect}</div>`;
+        html += `<div class="log-status">${log.effect}</div>`;
       } else if (log.type === 'effect') {
-        html += `<div class="log-effect">⚡ [${log.source}] ${log.effect}</div>`;
+        html += `<div class="log-effect">[${log.source}] ${log.effect}</div>`;
       } else if (log.type === 'dismantle') {
-        html += `<div class="log-dismantle">🗑️ 해체 (${log.source}): ${log.cardName} (${log.dismantleType})</div>`;
+        html += `<div class="log-dismantle">해체 (${log.source}): ${log.cardName} (${log.dismantleType})</div>`;
       } else if (log.type === 'extract') {
-        html += `<div class="log-extract">🔮 추출 효과 발동: ${log.cardName}</div>`;
+        html += `<div class="log-extract">추출 효과 발동: ${log.cardName}</div>`;
       } else if (log.cardName || log.type === undefined) {
         // 일반 카드 플레이 로그
         html += `<div class="log-play-card">▶ 플레이: <b>${log.cardName || '알 수 없는 카드'}</b> (T${log.turn || '?'} | 적 HP: ${log.enemyHpAfter || '?'})</div>`;
@@ -704,7 +798,7 @@ class App {
         // 바로 결과 렌더링
         this._renderFinalResults();
       } catch (err) {
-        alert('파일 형식이 올바르지 않습니다.');
+        alert(err.message || '파일 형식이 올바르지 않습니다.');
       }
     };
     reader.readAsText(file);
