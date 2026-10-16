@@ -12,7 +12,7 @@ import { newWorldDataVersion } from './newworld-cards.js';
 export const LEARNING_RULESET_VERSION = 'selection-battle-v3';
 
 /**
- * 덱 구성 풀에 같은 카드를 넣는 장수(희귀할수록 적게). NewWorld 희귀도 순서
+ * 덱 구성 풀의 등장 배수이자 동일 카드 최대 장수(희귀할수록 적게). NewWorld 희귀도 순서
  * common < rare < epic < unique < legendary를 따른다. 카드 데이터의 모든 희귀도가 여기 있어야 한다.
  */
 export const RARITY_COPIES = { common: 4, rare: 3, epic: 2, unique: 1, legendary: 1 };
@@ -56,8 +56,8 @@ export class CardAI {
 
     /**
      * 덱 구성 (카드풀에서 N장 선택)
-     * - 동일 카드 중복 허용 (power만 1장 제한)
-     * - 희귀도별 등장 배수: 높은 희귀도일수록 풀에 적게 등장
+     * - 동일 카드 중복은 희귀도별 최대 장수까지 허용 (power는 1장 제한)
+     * - 티어 기본값 대비 학습 가중치가 높은 카드 우선, 동률은 무작위
      */
     buildDeck(availablePacks, tierLimit, deckSize = 20) {
         const uniqueCards = [];
@@ -84,8 +84,15 @@ export class CardAI {
         }
 
         const deck = [];
-        const powerCount = new Map(); // power 카드 ID → 투입 횟수
         const deckCardIds = new Map(); // 덱에 이미 들어간 카드 ID별 횟수
+        const addCard = card => {
+            const count = deckCardIds.get(card.id) || 0;
+            const limit = card.type === 'power' ? 1 : RARITY_COPIES[card.rarity];
+            if (count >= limit) return;
+            deck.push(card);
+            deckCardIds.set(card.id, count + 1);
+        };
+        const relativeWeight = card => (this.cardWeights.get(card.id) || 1) / (SELECTION_PRIORS[card.tier] || 1);
 
         // ─── 탐색 보장: 사용 10회 미만 카드 우선 투입 ───
         const MIN_USES = 10;
@@ -103,45 +110,34 @@ export class CardAI {
 
         for (const card of underUsed) {
             if (deck.length >= explorationSlots) break;
-            if (card.type === 'power') {
-                if (powerCount.get(card.id)) continue;
-                powerCount.set(card.id, 1);
-            }
-            deck.push(card);
-            deckCardIds.set(card.id, (deckCardIds.get(card.id) || 0) + 1);
+            addCard(card);
         }
 
-        // ─── 나머지: 가중치 기반 정렬 (높은 순) ───
-        const sortedPool = [...pool].sort((a, b) => {
-            return (this.cardWeights.get(b.id) || 1) - (this.cardWeights.get(a.id) || 1);
-        });
+        // ─── 나머지: 동률을 섞은 뒤 티어 기본값 대비 가중치가 높은 순 ───
+        const sortedPool = [...pool];
+        for (let i = sortedPool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [sortedPool[i], sortedPool[j]] = [sortedPool[j], sortedPool[i]];
+        }
+        sortedPool.sort((a, b) => relativeWeight(b) - relativeWeight(a));
 
-        // 선택 확률 = sigmoid(가중치 - 티어 기대값)
+        // 선택 확률 = sigmoid(티어 기본값 대비 편차)
         for (const card of sortedPool) {
             if (deck.length >= deckSize) break;
 
-            // power 타입은 1장 제한
-            if (card.type === 'power') {
-                if (powerCount.get(card.id)) continue;
-                powerCount.set(card.id, 1);
-            }
-
-            const w = this.cardWeights.get(card.id) || 1;
-            const baseline = SELECTION_PRIORS[card.tier] || 1;
-            const deviation = (w - baseline) / baseline;
+            const deviation = relativeWeight(card) - 1;
             const prob = 1 / (1 + Math.exp(-deviation * 3));
             const adoptProb = Math.max(0.15, Math.min(0.98, prob));
 
             if (Math.random() < adoptProb || deck.length < 10) {
-                deck.push(card);
+                addCard(card);
             }
         }
 
-        while (deck.length < Math.min(10, pool.length)) {
-            const randCard = pool[Math.floor(Math.random() * pool.length)];
-            if (randCard.type === 'power' && powerCount.get(randCard.id)) continue;
-            if (randCard.type === 'power') powerCount.set(randCard.id, 1);
-            deck.push(randCard);
+        const fallbackPool = [...pool];
+        while (deck.length < Math.min(deckSize, 10) && fallbackPool.length > 0) {
+            const index = Math.floor(Math.random() * fallbackPool.length);
+            addCard(fallbackPool.splice(index, 1)[0]);
         }
 
         return deck;

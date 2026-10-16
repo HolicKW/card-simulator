@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { CardAI, RARITY_COPIES } from '../js/ai.js';
 import { getAllCards } from '../js/cards.js';
-import { fixture, card } from './helpers.mjs';
+import { fixture, card, withRandom } from './helpers.mjs';
 
 export const tests = [
     ['every card rarity has a deck pool multiplier and rarer cards never get more copies', () => {
@@ -14,6 +14,43 @@ export const tests = [
         original.rarity = 'mythic';
         try { assert.throws(() => ai.buildDeck(['base'], 5, 20), /희귀도/); }
         finally { original.rarity = rarity; }
+    }],
+    ['exploration and ordinary selection share rarity limits and keep powers at one copy', () => {
+        const cards = getAllCards().filter(next => next.pack === 'base');
+        for (const uses of [0, 10]) {
+            const ai = new CardAI();
+            for (const next of cards) ai.cumulativeStats.set(next.id, { uses });
+            const deck = withRandom([0], () => ai.buildDeck(['base'], 5, 1000));
+            const counts = new Map();
+            for (const next of deck) counts.set(next.id, (counts.get(next.id) || 0) + 1);
+            for (const next of cards) {
+                const limit = next.type === 'power' ? 1 : RARITY_COPIES[next.rarity];
+                assert.equal(counts.get(next.id), limit, `${next.id}, uses=${uses}`);
+            }
+        }
+    }],
+    ['deck ranking rewards improvement over the tier baseline rather than raw weight', () => {
+        const ai = new CardAI();
+        for (const id of ai.cardWeights.keys()) ai.cumulativeStats.set(id, { uses: 10 });
+        const lowTier = getAllCards().find(next => next.pack === 'base' && next.tier === 1);
+        ai.cardWeights.set(lowTier.id, ai.cardWeights.get(lowTier.id) * 1.5);
+        const deck = withRandom([0], () => ai.buildDeck(['base'], 5, 20));
+        assert.equal(deck[0].id, lowTier.id);
+    }],
+    ['equal normalized deck weights use random order across tiers', () => {
+        const ai = new CardAI();
+        for (const id of ai.cardWeights.keys()) ai.cumulativeStats.set(id, { uses: 10 });
+        const first = withRandom([0.999999], () => ai.buildDeck(['base'], 5, 20));
+        const second = withRandom([0, 0.999999], () => ai.buildDeck(['base'], 5, 20));
+        assert.notEqual(first[0].id, second[0].id);
+    }],
+    ['deck fallback respects requested sizes below ten', () => {
+        const ai = new CardAI();
+        for (const id of ai.cardWeights.keys()) ai.cumulativeStats.set(id, { uses: 10 });
+        for (const size of [0, 1, 5]) {
+            const deck = withRandom([0.999999], () => ai.buildDeck(['base'], 5, size));
+            assert.equal(deck.length, size);
+        }
     }],
     ['AI uses engine dynamic and scaled costs instead of rejecting their printed costs', () => {
         const { engine, caster, target } = fixture();
