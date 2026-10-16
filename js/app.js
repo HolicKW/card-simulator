@@ -174,6 +174,7 @@ class App {
       await this.simulator.runPerformance({ cardIds,
         seeds: Number(document.getElementById('evaluation-seeds').value),
         seed: Number(document.getElementById('evaluation-seed').value),
+        dedicated: document.getElementById('evaluation-dedicated').checked,
         deckSize: Number(document.getElementById('deck-size').value)
       }, value => this._updateProgress(value));
       this._renderFinalResults();

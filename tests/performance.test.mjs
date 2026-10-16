@@ -11,7 +11,7 @@ const record = (winner, logs = [ordinary], side) => ({ side, enemy: 'T1 미러',
     deck: [card('DM_007'), card('BASE_001')], result: { winner, cardUsageLog: logs } });
 // 빈 슬롯 대비 승점 변화가 시드마다 values를 순환하는 일반 덱 측정 결과
 const gain = (...values) => ({ general: summarizeTrials(Array.from({ length: 200 }, (_, index) => ({ seed: index,
-    candidate: values[index % values.length], reference: 0, empty: 0, played: 1, uses: 1, draws: 0, selfDefeats: 0 }))) });
+    candidate: values[index % values.length], empty: 0, played: 1, uses: 1, draws: 0, selfDefeats: 0 }))) });
 const tierOne = getAllCards().filter(next => next.tier === 1).map(next => next.id);
 
 export const tests = [
@@ -51,24 +51,23 @@ export const tests = [
             for (const context of ['general', 'dedicated']) {
                 const decks = benchmarkDecks(source.id, context);
                 assert.equal(decks.candidate.length, 20, source.id);
-                assert.equal(decks.reference.length, 20, source.id);
                 assert.equal(decks.empty.length, 20, source.id);
                 assert.equal(decks.opponent.length, 20, source.id);
-                assert.deepEqual(decks.candidate.slice(1), decks.reference.slice(1));
+                assert.deepEqual(decks.candidate.slice(1), decks.empty.slice(1));
+                assert.equal(decks.reference, undefined);
                 assert.equal(decks.candidate.filter(next => next.id === source.id).length, 1);
             }
             const measured = probeCard(source.id, { followTurns: 0 });
             assert.ok(Object.values(measured.immediate).filter(value => typeof value === 'number').every(Number.isFinite), source.id);
         }
     }],
-    ['identical slot substitutions have exactly zero effect under both first sides and a reproducible policy', () => {
+    ['paired trials are reproducible and compare only the card against an empty slot', () => {
         const first = pairedTrial('BASE_001', 'general', 17);
         assert.deepEqual(first, pairedTrial('BASE_001', 'general', 17));
-        assert.equal(first.candidate, first.reference);
+        assert.deepEqual(Object.keys(first).sort(), ['candidate', 'draws', 'empty', 'played', 'seed', 'selfDefeats', 'uses']);
         const summary = summarizeTrials([first, pairedTrial('BASE_001', 'general', 18)]);
-        assert.equal(summary.delta.mean, 0);
-        assert.equal(summary.matches, 12); assert.equal(summary.seeds, 2);
-        assert.equal(summary.calibrated, false);
+        assert.equal(summary.matches, 8); assert.equal(summary.seeds, 2);   // 시드 2 × (카드·빈 칸) × 선공 2
+        assert.equal(summary.calibrated, false); assert.equal(summary.delta, undefined);
     }],
     ['sample size, not the reference card, decides whether a measurement counts', () => {
         const flat = { seed: 1, candidate: 1, reference: 0.5, empty: 0.5, played: 1, uses: 1, draws: 0, selfDefeats: 0 };
@@ -151,7 +150,9 @@ export const tests = [
         const report = await sim.runPerformance({ cardIds: ['BASE_001'], seeds: 2, probeSamples: 2 });
         assert.deepEqual(sim.ai.exportWeights(), before);
         assert.equal(report.status, 'complete');
-        assert.equal(report.cards.BASE_001.general.delta.mean, 0);
+        // 팩 전용 덱은 기본으로 측정하지 않는다
+        assert.deepEqual(report.config.contexts, ['general']); assert.equal(report.cards.BASE_001.dedicated, undefined);
+        assert.ok(Number.isFinite(report.cards.BASE_001.general.benefit.mean));
         const exported = sim.exportData(), restored = new Simulator();
         restored.importData(exported);
         assert.deepEqual(restored.exportData(), exported);
@@ -171,6 +172,24 @@ export const tests = [
         forged.cards.BASE_001.general.trials[0].candidate = NaN;
         assert.throws(() => restored.importData({ kind: 'performance-report', schemaVersion: 1, performance: forged }), /表本|표본/);
         assert.deepEqual(restored.exportData(), prior);
+    }],
+    ['pack-only decks are measured on request and older two-deck reports still import', async () => {
+        const evaluator = new PerformanceEvaluator();
+        const both = await evaluator.run({ cardIds: ['DM_007'], seeds: 2, probeSamples: 1, dedicated: true });
+        assert.deepEqual(both.config.contexts, ['general', 'dedicated']);
+        assert.equal(both.cards.DM_007.dedicated.seeds, 2);
+        // 이전 형식: config.contexts가 없고 시드마다 신속 타격(reference) 결과가 함께 저장돼 있다
+        const legacy = JSON.parse(JSON.stringify(both));
+        delete legacy.config.contexts;
+        for (const context of ['general', 'dedicated']) for (const trial of legacy.cards.DM_007[context].trials) trial.reference = 0.5;
+        const sim = new Simulator();
+        sim.importData({ kind: 'performance-report', schemaVersion: 1, performance: legacy });
+        assert.equal(sim.performanceReport.cards.DM_007.general.benefit.mean, both.cards.DM_007.general.benefit.mean);
+        // 측정 설정에 없는 덱 결과는 받지 않는다
+        const stray = JSON.parse(JSON.stringify(both));
+        stray.config.contexts = ['general'];
+        assert.throws(() => sim.importData({ kind: 'performance-report', schemaVersion: 1, performance: stray }), /설정/);
+        await assert.rejects(evaluator.run({ cardIds: ['DM_007'], seeds: 2, dedicated: 'yes' }), /설정/);
     }],
     ['old and malformed imports fail atomically and evaluation rejects invalid settings', async () => {
         const sim = new Simulator(), before = sim.exportData();

@@ -13,6 +13,11 @@ const ENVIRONMENTS = { 1: [60, 3], 2: [115, 3], 3: [190, 3], 4: [295, 4], 5: [37
 const EMPTY = { id: 'EVAL_EMPTY', name: '빈 슬롯', type: 'skill', pack: 'evaluation',
     rarity: 'common', tier: 1, cost: 0, effects: [], keywords: [] };
 const SCENARIOS = ['basic', 'developed', 'prepared'];
+// 시드마다 같은 덱의 한 슬롯을 이 카드 / 빈 슬롯으로 바꿔 각각 선공·후공 2판씩 대전한다
+const ARMS = ['candidate', 'empty'];
+const CONTEXTS = ['general', 'dedicated'];
+// 이전 파일(config.contexts 없음)은 두 덱 모두 측정했다
+const contextsOf = config => config.contexts ?? CONTEXTS;
 const MIN_TRIALS = 200;      // 카드 한 장의 측정을 확정하는 최소 시드 수
 const MIN_TIER_CARDS = 3;    // 티어 기준(중앙값)을 만드는 최소 확정 카드 수
 const MIN_RANK_CARDS = 10;   // 티어 안 순위로 등급을 매기는 최소 확정 카드 수
@@ -262,7 +267,7 @@ function fillDeck(pool, count, offset = 0) {
 
 export function benchmarkDecks(cardId, context = 'general', deckSize = 20, variant = 0) {
     const card = getCardById(cardId), cards = getAllCards();
-    if (!card || !['general', 'dedicated'].includes(context) || !Number.isInteger(deckSize) || deckSize < 10 || deckSize > 40)
+    if (!card || !CONTEXTS.includes(context) || !Number.isInteger(deckSize) || deckSize < 10 || deckSize > 40)
         throw new Error('Invalid benchmark configuration.');
     const eligible = cards.filter(next => next.tier <= card.tier && next.id !== cardId);
     const base = eligible.filter(next => next.pack === 'base' && next.cost <= 3);
@@ -274,8 +279,8 @@ export function benchmarkDecks(cardId, context = 'general', deckSize = 20, varia
     const opponents = ['base', 'overclock', 'dismantle', 'network', 'biohazard', 'russian_roulette'];
     const opponentPack = opponents[variant % opponents.length];
     const opponent = fillDeck(cards.filter(next => next.tier <= card.tier && next.pack === opponentPack && next.cost <= 3), deckSize, variant);
-    return { candidate: [card, ...own], reference: [getCardById('BASE_001'), ...own],
-        empty: [EMPTY, ...own], opponent, hp: ENVIRONMENTS[card.tier][0], energy: ENVIRONMENTS[card.tier][1] };
+    return { candidate: [card, ...own], empty: [EMPTY, ...own], opponent,
+        hp: ENVIRONMENTS[card.tier][0], energy: ENVIRONMENTS[card.tier][1] };
 }
 
 function policy() {
@@ -289,7 +294,7 @@ function policy() {
 export function pairedTrial(cardId, context, seed, { deckSize = 20, maxTurns = 200 } = {}) {
     const decks = benchmarkDecks(cardId, context, deckSize, seed % 6);
     const strategy = policy(), results = {}, usage = { played: 0, uses: 0, draws: 0, selfDefeats: 0 };
-    for (const arm of ['candidate', 'reference', 'empty']) {
+    for (const arm of ARMS) {
         const scores = [];
         for (const firstSide of ['A', 'B']) {
             const result = withSeed(seed, () => {
@@ -311,16 +316,15 @@ export function pairedTrial(cardId, context, seed, { deckSize = 20, maxTurns = 2
 }
 
 export function summarizeTrials(trials) {
-    const delta = interval(trials.map(trial => trial.candidate - trial.reference));
     const benefit = interval(trials.map(trial => trial.candidate - trial.empty));
-    // 표본 수만으로 확정한다. 정규화는 기준 카드 한 장이 아니라 티어 중앙값(calibrateTiers)으로 한다.
+    // 표본 수만으로 확정한다. 등급은 티어 안 순위(rankTiers)로 매긴다.
     const calibrated = trials.length >= MIN_TRIALS;
-    return { seeds: trials.length, matches: trials.length * 6, delta, benefit, calibrated,
+    return { seeds: trials.length, matches: trials.length * ARMS.length * 2, benefit, calibrated,
         playedRate: mean(trials.map(trial => trial.played / 2)),
         avgUses: mean(trials.map(trial => trial.uses / 2)),
         drawRate: mean(trials.map(trial => trial.draws / 2)),
         defeatRate: mean(trials.map(trial => trial.selfDefeats / 2)),
-        scores: Object.fromEntries(['candidate', 'reference', 'empty'].map(arm => [arm, mean(trials.map(trial => trial[arm]))])),
+        scores: Object.fromEntries(ARMS.map(arm => [arm, mean(trials.map(trial => trial[arm]))])),
         trials };
 }
 
@@ -360,28 +364,31 @@ export function rankTiers(cards) {
 export class PerformanceEvaluator {
     constructor() { this.running = false; }
     stop() { this.running = false; }
-    async run({ cardIds = PILOT_CARDS, seeds = 50, probeSamples = 50, seed = 1, deckSize = 20, maxTurns = 200 } = {}, onProgress = () => {}) {
+    // dedicated: 팩 전용 덱도 측정할지. 등급에는 일반 덱만 쓰므로 기본은 끔(측정 시간 약 절반).
+    async run({ cardIds = PILOT_CARDS, seeds = 50, probeSamples = 50, seed = 1, deckSize = 20, maxTurns = 200, dedicated = false } = {}, onProgress = () => {}) {
         if (this.running) throw new Error('이미 성능을 측정 중입니다.');
         if (!Number.isInteger(seeds) || seeds < 2 || seeds > 5000 || !Number.isInteger(probeSamples) || probeSamples < 1 || probeSamples > 1000
-            || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 200)
+            || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 200
+            || typeof dedicated !== 'boolean')
             throw new Error('평가 시드 수 또는 설정이 유효하지 않습니다.');
+        const contexts = dedicated ? CONTEXTS : ['general'];
         const ids = [...new Set(cardIds)];
         if (!ids.length || ids.some(id => !getAllCards().some(card => card.id === id))) throw new Error('평가할 일반 카드를 선택해 주세요.');
         benchmarkDecks(ids[0], 'general', deckSize);
         this.running = true;
         const report = { evaluationVersion: EVALUATION_VERSION, policyVersion: POLICY_VERSION, dataVersion: newWorldDataVersion,
-            config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns }, status: 'running',
-            referenceCard: 'BASE_001', environments: ENVIRONMENTS, cards: {}, tierTargets: {}, targetSource: 'tier-median-benefit' };
+            config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns, contexts }, status: 'running',
+            environments: ENVIRONMENTS, cards: {}, tierTargets: {}, targetSource: 'tier-median-benefit' };
         let current = 0;
         try {
             for (const id of ids) {
                 if (!this.running) break;
                 const result = { probes: measureCard(id, probeSamples, seed) };
-                for (const context of ['general', 'dedicated']) {
+                for (const context of contexts) {
                     const trials = [];
                     for (let index = 0; index < seeds && this.running; index++) {
                         trials.push(pairedTrial(id, context, seed + index, { deckSize, maxTurns }));
-                        onProgress({ current: ++current, total: ids.length * seeds * 2, cardId: id, context, seeds: index + 1 });
+                        onProgress({ current: ++current, total: ids.length * seeds * contexts.length, cardId: id, context, seeds: index + 1 });
                         if (index % 5 === 4) await new Promise(resolve => setTimeout(resolve, 0));
                     }
                     if (trials.length) result[context] = summarizeTrials(trials);
@@ -412,6 +419,10 @@ export function validatePerformanceReport(report) {
         || !Number.isInteger(config.deckSize) || config.deckSize < 10 || config.deckSize > 40
         || !Number.isInteger(config.maxTurns) || config.maxTurns < 1 || config.maxTurns > 200)
         throw new Error('유효하지 않은 성능 평가 설정입니다.');
+    const contexts = contextsOf(config);
+    if (!Array.isArray(contexts) || contexts[0] !== 'general' || contexts.some(context => !CONTEXTS.includes(context))
+        || new Set(contexts).size !== contexts.length)
+        throw new Error('유효하지 않은 성능 평가 설정입니다.');
     const clean = JSON.parse(JSON.stringify(report));
     for (const [id, result] of Object.entries(report.cards)) {
         if (!config.cardIds.includes(id) || !result.probes) throw new Error('유효하지 않은 카드 성능 데이터입니다.');
@@ -424,14 +435,18 @@ export function validatePerformanceReport(report) {
                 throw new Error('유효하지 않은 조건별 측정값입니다.');
         }
         if (Object.keys(result.probes).some(key => !SCENARIOS.includes(key))) throw new Error('알 수 없는 측정 조건입니다.');
-        for (const context of ['general', 'dedicated']) {
+        for (const context of CONTEXTS) {
             const data = result[context];
+            if (!contexts.includes(context)) {
+                if (data) throw new Error('측정 설정에 없는 덱 결과가 있습니다.');
+                continue;
+            }
             if (!data && report.status === 'complete') throw new Error('덱별 측정값이 누락되었습니다.');
             if (data && (!Array.isArray(data.trials) || !data.trials.length || data.trials.length > config.seeds
                 || (report.status === 'complete' && data.trials.length !== config.seeds)
                 || new Set(data.trials.map(trial => trial.seed)).size !== data.trials.length
                 || data.trials.some(trial => !Number.isInteger(trial.seed) || trial.seed < config.seed || trial.seed >= config.seed + config.seeds
-                    || ['candidate', 'reference', 'empty'].some(arm => !Number.isFinite(trial[arm]) || trial[arm] < 0 || trial[arm] > 1)
+                    || ARMS.some(arm => !Number.isFinite(trial[arm]) || trial[arm] < 0 || trial[arm] > 1)
                     || ['played', 'uses', 'draws', 'selfDefeats'].some(key => !Number.isInteger(trial[key]) || trial[key] < 0 || trial[key] > (key === 'uses' ? 12000 : 2)))))
                 throw new Error('유효하지 않은 전투 표본입니다.');
             if (data) clean.cards[id][context] = summarizeTrials(data.trials);
