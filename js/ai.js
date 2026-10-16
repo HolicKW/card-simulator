@@ -9,7 +9,13 @@
 import { getAllCards, getCardsByPack } from './cards.js';
 import { newWorldDataVersion } from './newworld-cards.js';
 
-export const LEARNING_RULESET_VERSION = 'selection-battle-v2';
+export const LEARNING_RULESET_VERSION = 'selection-battle-v3';
+
+/**
+ * 덱 구성 풀에 같은 카드를 넣는 장수(희귀할수록 적게). NewWorld 희귀도 순서
+ * common < rare < epic < unique < legendary를 따른다. 카드 데이터의 모든 희귀도가 여기 있어야 한다.
+ */
+export const RARITY_COPIES = { common: 4, rare: 3, epic: 2, unique: 1, legendary: 1 };
 
 /**
  * 학습을 시작할 때의 선택 우선도. T1을 1로 정규화한 기존 티어 비율이다.
@@ -67,19 +73,12 @@ export class CardAI {
 
         if (uniqueCards.length === 0) return [];
 
-        // 희귀도별 풀 등장 배수 (획득 확률 시뮬레이션)
-        const rarityMultiplier = {
-            common: 4,
-            uncommon: 3,
-            rare: 2,
-            legendary: 1
-        };
-
-        // 카드풀 구성: 희귀도에 따라 복수 투입
+        // 카드풀 구성: 희귀도에 따라 복수 투입. 모르는 희귀도는 기본값으로 넘기지 않는다.
         const pool = [];
         for (const card of uniqueCards) {
-            const mult = rarityMultiplier[card.rarity] || 2;
-            for (let i = 0; i < mult; i++) {
+            const copies = RARITY_COPIES[card.rarity];
+            if (!copies) throw new Error(`덱 구성에 쓸 수 없는 희귀도입니다: ${card.rarity} (${card.id})`);
+            for (let i = 0; i < copies; i++) {
                 pool.push(card);
             }
         }

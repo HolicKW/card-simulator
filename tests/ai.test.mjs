@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
-import { CardAI } from '../js/ai.js';
+import { CardAI, RARITY_COPIES } from '../js/ai.js';
+import { getAllCards } from '../js/cards.js';
 import { fixture, card } from './helpers.mjs';
 
 export const tests = [
+    ['every card rarity has a deck pool multiplier and rarer cards never get more copies', () => {
+        for (const next of getAllCards()) assert.ok(RARITY_COPIES[next.rarity] > 0, `${next.id} ${next.rarity}`);
+        const order = ['common', 'rare', 'epic', 'unique', 'legendary'];
+        assert.deepEqual(order.map(rarity => RARITY_COPIES[rarity]), [4, 3, 2, 1, 1]);
+        // 모르는 희귀도는 기본값으로 넘기지 않고 덱 구성에서 바로 알린다
+        const ai = new CardAI(), original = getAllCards().find(next => next.pack === 'base');
+        const rarity = original.rarity;
+        original.rarity = 'mythic';
+        try { assert.throws(() => ai.buildDeck(['base'], 5, 20), /희귀도/); }
+        finally { original.rarity = rarity; }
+    }],
     ['AI uses engine dynamic and scaled costs instead of rejecting their printed costs', () => {
         const { engine, caster, target } = fixture();
         const ai = new CardAI();
