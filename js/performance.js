@@ -361,9 +361,37 @@ export function rankTiers(cards) {
     return ranks;
 }
 
+// 동시 측정 워커 수: 화면용으로 코어 하나를 남기고 1~8개 (8개 위로는 빨라지는 폭이 작다)
+export const workerCount = cores => Math.max(1, Math.min(8, (cores || 1) - 1));
+
+// 카드 한 장 측정. 워커와 메인 스레드가 같이 쓴다. 시드로 결과가 정해지므로 어디서 돌려도 같다.
+export async function evaluateCard(id, config, { onTrials = () => {}, shouldStop = () => false, yieldEvery = 0 } = {}) {
+    const result = { probes: measureCard(id, config.probeSamples, config.seed) };
+    for (const context of config.contexts) {
+        const trials = [];
+        for (let index = 0; index < config.seeds && !shouldStop(); index++) {
+            trials.push(pairedTrial(id, context, config.seed + index, config));
+            onTrials(context, index + 1);
+            if (yieldEvery && index % yieldEvery === yieldEvery - 1) await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        if (trials.length) result[context] = summarizeTrials(trials);
+        if (shouldStop()) break;
+    }
+    return result;
+}
+
 export class PerformanceEvaluator {
-    constructor() { this.running = false; }
-    stop() { this.running = false; }
+    // workers > 1이고 createWorker가 있으면 카드를 워커들에 나눠 동시에 측정한다
+    constructor({ workers = 1, createWorker = null } = {}) {
+        this.running = false;
+        this.workers = createWorker ? workers : 1;
+        this.createWorker = createWorker;
+        this._abort = null;
+    }
+    stop() {
+        this.running = false;
+        this._abort?.();
+    }
     // dedicated: 팩 전용 덱도 측정할지. 등급에는 일반 덱만 쓰므로 기본은 끔(측정 시간 약 절반).
     async run({ cardIds = PILOT_CARDS, seeds = 50, probeSamples = 50, seed = 1, deckSize = 20, maxTurns = 200, dedicated = false } = {}, onProgress = () => {}) {
         if (this.running) throw new Error('이미 성능을 측정 중입니다.');
@@ -379,28 +407,73 @@ export class PerformanceEvaluator {
         const report = { evaluationVersion: EVALUATION_VERSION, policyVersion: POLICY_VERSION, dataVersion: newWorldDataVersion,
             config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns, contexts }, status: 'running',
             environments: ENVIRONMENTS, cards: {}, tierTargets: {}, targetSource: 'tier-median-benefit' };
-        let current = 0;
+        const total = ids.length * seeds * contexts.length;
         try {
-            for (const id of ids) {
-                if (!this.running) break;
-                const result = { probes: measureCard(id, probeSamples, seed) };
-                for (const context of contexts) {
-                    const trials = [];
-                    for (let index = 0; index < seeds && this.running; index++) {
-                        trials.push(pairedTrial(id, context, seed + index, { deckSize, maxTurns }));
-                        onProgress({ current: ++current, total: ids.length * seeds * contexts.length, cardId: id, context, seeds: index + 1 });
-                        if (index % 5 === 4) await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-                    if (trials.length) result[context] = summarizeTrials(trials);
-                    if (!this.running) break;
-                }
-                report.cards[id] = result;
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
+            const results = Math.min(this.workers, ids.length) > 1
+                ? await this._runParallel(ids, report.config, total, onProgress)
+                : await this._runSequential(ids, report.config, total, onProgress);
+            // 보고서에는 요청한 카드 순서대로 넣는다
+            for (const id of ids) if (results[id]) report.cards[id] = results[id];
             report.status = this.running ? 'complete' : 'cancelled';
             report.tierTargets = calibrateTiers(report.cards);
             return report;
-        } finally { this.running = false; }
+        } finally {
+            this.running = false;
+            this._abort = null;
+        }
+    }
+
+    // 메인 스레드에서 한 장씩. 중지하면 진행 중이던 카드도 그때까지의 표본으로 남긴다.
+    async _runSequential(ids, config, total, onProgress) {
+        const results = {};
+        let current = 0;
+        for (const id of ids) {
+            if (!this.running) break;
+            results[id] = await evaluateCard(id, config, { yieldEvery: 5, shouldStop: () => !this.running,
+                onTrials: (context, seeds) => onProgress({ current: ++current, total, cardId: id, context, seeds }) });
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        return results;
+    }
+
+    // 워커마다 카드 한 장씩 맡기고 끝나면 다음 카드를 준다(카드마다 걸리는 시간이 달라서).
+    // 중지하면 워커를 바로 끝내므로, 진행 중이던 카드는 빠지고 끝난 카드만 남는다.
+    _runParallel(ids, config, total, onProgress) {
+        return new Promise((resolve, reject) => {
+            const queue = [...ids], results = {}, workers = [];
+            let current = 0, busy = 0, settled = false;
+            const finish = error => {
+                if (settled) return;
+                settled = true;
+                for (const worker of workers) worker.terminate();
+                if (error) reject(error); else resolve(results);
+            };
+            this._abort = () => finish();
+            const dispatch = worker => {
+                if (!this.running || !queue.length) {
+                    if (busy === 0) finish();
+                    return;
+                }
+                busy++;
+                worker.post({ id: queue.shift(), config });
+            };
+            for (let index = 0; index < Math.min(this.workers, ids.length); index++) {
+                const worker = this.createWorker();
+                workers.push(worker);
+                worker.listen(message => {
+                    if (settled) return;
+                    if (message.type === 'progress') {
+                        current += message.trials;
+                        onProgress({ current, total, cardId: message.id, context: message.context, seeds: message.seeds });
+                    } else if (message.type === 'done') {
+                        busy--;
+                        results[message.id] = message.result;
+                        dispatch(worker);
+                    } else finish(new Error(`성능 측정 워커 오류: ${message.message || '알 수 없음'}`));
+                });
+            }
+            workers.forEach(dispatch);
+        });
     }
 }
 

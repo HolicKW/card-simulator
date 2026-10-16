@@ -8,7 +8,23 @@
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
 import { getAllCards } from './cards.js';
-import { PerformanceEvaluator, validatePerformanceReport, rankTiers } from './performance.js';
+import { PerformanceEvaluator, validatePerformanceReport, rankTiers, workerCount } from './performance.js';
+
+// 브라우저에서는 Web Worker로 성능 측정을 나눠 돌린다 (Node 테스트에서는 메인 스레드에서 순차 실행)
+const browserWorkers = typeof window !== 'undefined' && typeof Worker !== 'undefined' ? {
+    workers: workerCount(navigator.hardwareConcurrency),
+    createWorker: () => {
+        const worker = new Worker(new URL('./performance-worker.js', import.meta.url), { type: 'module' });
+        return {
+            post: message => worker.postMessage(message),
+            listen: handler => {
+                worker.onmessage = event => handler(event.data);
+                worker.onerror = event => handler({ type: 'error', message: event.message });
+            },
+            terminate: () => worker.terminate()
+        };
+    }
+} : {};
 
 // 등급 순(S→?)으로, 같은 등급 안에서는 실측 카드를 상위 순위부터, 잠정 카드는 비율 높은 순으로
 const GRADE_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4, F: 5, '?': 6 };
@@ -19,7 +35,7 @@ export class Simulator {
     constructor() {
         this.engine = new BattleEngine();
         this.ai = new CardAI();
-        this.evaluator = new PerformanceEvaluator();
+        this.evaluator = new PerformanceEvaluator(browserWorkers);
         this.performanceReport = null;
         this.isRunning = false;
         this.battleLog = []; // 전투별 덱 + 결과 기록

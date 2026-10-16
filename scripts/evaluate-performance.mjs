@@ -1,6 +1,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { PerformanceEvaluator, PILOT_CARDS } from '../js/performance.js';
+import { PILOT_CARDS } from '../js/performance.js';
+import { nodeWorkerEvaluator } from './worker-pool.mjs';
 import { getAllCards } from '../js/cards.js';
 
 const args = process.argv.slice(2);
@@ -14,7 +15,8 @@ for (const arg of args.filter(arg => arg.startsWith('--'))) {
     if (!['--all', '--dedicated', '--seeds', '--seed', '--probes', '--output'].includes(arg)) throw new Error(`Unknown option: ${arg}`);
 }
 const output = path.resolve(value('--output', 'performance-results.json'));
-const evaluator = new PerformanceEvaluator();
+const evaluator = nodeWorkerEvaluator();
+console.log(`workers: ${evaluator.workers}`);
 let previous = '';
 const report = await evaluator.run({ cardIds: args.includes('--all') ? getAllCards().map(card => card.id) : PILOT_CARDS,
     seeds: Number(value('--seeds', '50')), seed: Number(value('--seed', '1')), probeSamples: Number(value('--probes', '50')),

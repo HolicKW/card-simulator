@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { CardAI } from '../js/ai.js';
 import { Simulator } from '../js/simulator.js';
 import { getAllCards } from '../js/cards.js';
-import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, calibrateTiers, rankTiers, PerformanceEvaluator } from '../js/performance.js';
+import { withSeed, probeCard, measureCard, benchmarkDecks, pairedTrial, summarizeTrials, calibrateTiers, rankTiers, workerCount, PerformanceEvaluator } from '../js/performance.js';
+import { nodeWorkerEvaluator } from '../scripts/worker-pool.mjs';
 import { performanceReportHTML } from '../js/performance-view.js';
 import { card } from './helpers.mjs';
 
@@ -172,6 +173,21 @@ export const tests = [
         forged.cards.BASE_001.general.trials[0].candidate = NaN;
         assert.throws(() => restored.importData({ kind: 'performance-report', schemaVersion: 1, performance: forged }), /表本|표본/);
         assert.deepEqual(restored.exportData(), prior);
+    }],
+    ['parallel workers produce exactly the sequential report and can be stopped', async () => {
+        const config = { cardIds: ['BASE_001', 'DM_007', 'NW_011'], seeds: 3, probeSamples: 1 };
+        const sequential = await new PerformanceEvaluator().run(config);
+        const parallel = await nodeWorkerEvaluator(2).run(config);
+        assert.equal(parallel.status, 'complete');
+        assert.deepEqual(parallel.cards, sequential.cards);
+        // 중지하면 끝난 카드만 남기고 cancelled로 기록하며, 그 파일도 불러올 수 있다
+        const pool = nodeWorkerEvaluator(2);
+        const stopped = await pool.run({ ...config, seeds: 50 }, () => pool.stop());
+        assert.equal(stopped.status, 'cancelled'); assert.equal(pool.running, false);
+        new Simulator().importData({ kind: 'performance-report', schemaVersion: 1, performance: stopped });
+    }],
+    ['worker count leaves one core for the page and stays between 1 and 8', () => {
+        assert.deepEqual([1, 2, 4, 9, 16, 64, undefined].map(workerCount), [1, 1, 3, 8, 8, 8, 1]);
     }],
     ['pack-only decks are measured on request and older two-deck reports still import', async () => {
         const evaluator = new PerformanceEvaluator();
