@@ -7,7 +7,9 @@
 
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
-import { getAllCards } from './cards.js';
+import { getAllCards, getCardOverrides, overridesKey } from './cards.js';
+
+const reportKey = report => overridesKey(report?.config?.overrides ?? {});
 import { PerformanceEvaluator, validatePerformanceReport, rankTiers, workerCount } from './performance.js';
 
 // 브라우저에서는 Web Worker로 성능 측정을 나눠 돌린다 (Node 테스트에서는 메인 스레드에서 순차 실행)
@@ -36,7 +38,8 @@ export class Simulator {
         this.engine = new BattleEngine();
         this.ai = new CardAI();
         this.evaluator = new PerformanceEvaluator(browserWorkers);
-        this.performanceReport = null;
+        this.performanceReport = null;   // 가장 최근 측정 (어떤 수정 상태든)
+        this.baselineReport = null;      // 수정 없이 측정한 가장 최근 결과 (비교 기준)
         this.isRunning = false;
         this.battleLog = []; // 전투별 덱 + 결과 기록
         this.onProgress = null;
@@ -70,8 +73,19 @@ export class Simulator {
     async runPerformance(config, onProgress) {
         if (this.isRunning || this.evaluator.running) throw new Error('진행 중인 작업을 먼저 마쳐 주세요.');
         const report = await this.evaluator.run(config, onProgress);
-        this.performanceReport = report;
+        this._storeReport(report);
         return report;
+    }
+
+    _storeReport(report) {
+        this.performanceReport = report;
+        if (report && reportKey(report) === overridesKey({})) this.baselineReport = report;
+    }
+
+    // 지금 카드 수정 상태로 측정한 결과. 다른 수치로 측정한 결과는 등급에 쓰지 않는다.
+    activeReport() {
+        const key = overridesKey(getCardOverrides());
+        return [this.performanceReport, this.baselineReport].find(report => report && reportKey(report) === key) ?? null;
     }
 
     exportData() {
@@ -81,10 +95,13 @@ export class Simulator {
     importData(data) {
         if (this.isRunning || this.evaluator.running) throw new Error('진행 중에는 데이터를 불러올 수 없습니다.');
         const performance = validatePerformanceReport(data?.performance);
+        // 원본(수정 없음) 측정은 비교 기준으로 받고, 지금과 다른 수정 상태의 측정은 섞지 않는다 (가중치를 바꾸기 전에 확인)
+        if (performance && reportKey(performance) !== overridesKey({}) && reportKey(performance) !== overridesKey(getCardOverrides()))
+            throw new Error('지금과 다른 카드 수치로 측정한 파일입니다. 같은 카드 수정 상태에서 불러와 주세요.');
         if (data?.kind === 'performance-report') {
             if (data.schemaVersion !== 1 || !data.performance) throw new Error('유효하지 않은 성능 파일입니다.');
         } else this.ai.importWeights(data);
-        this.performanceReport = performance;
+        this._storeReport(performance);
     }
 
     /**
@@ -295,17 +312,23 @@ export class Simulator {
      */
     getAnalysis() {
         const grade = value => value >= 1.5 ? 'S' : value >= 1.2 ? 'A' : value >= 0.9 ? 'B' : value >= 0.65 ? 'C' : value >= 0.45 ? 'D' : 'F';
-        const ranks = rankTiers(this.performanceReport?.cards || {});
+        const report = this.activeReport(), edited = getCardOverrides();
+        const ranks = rankTiers(report?.cards || {});
+        // 카드를 수정했고 원본 측정이 있으면, 원본 순위를 "수정 전"으로 함께 보여 준다
+        const beforeRanks = Object.keys(edited).length && this.baselineReport && report ? rankTiers(this.baselineReport.cards) : {};
         const tierList = this.ai.getCardTierList().map(card => {
-            const performance = this.performanceReport?.cards[card.id];
-            const measured = ranks[card.id];
+            const performance = report?.cards[card.id];
+            const measured = ranks[card.id], before = beforeRanks[card.id] ?? null;
             // 같은 티어에서 충분히 측정되면 티어 안 순위로 실측 등급, 아니면 학습 대전의 선택 가중치로 잠정 등급
-            if (measured) return { ...card, performance, measured, ratio: null, valueTier: measured.grade, gradeSource: 'measured' };
+            if (measured) return { ...card, performance, measured, before, ratio: null, valueTier: measured.grade, gradeSource: 'measured' };
             const used = card.totalUses > 0;
             const ratio = used ? Math.round(card.weight / card.selectionBaseline * 10000) / 10000 : null;
-            return { ...card, performance, measured: null, ratio,
+            return { ...card, performance, measured: null, before, ratio,
                 valueTier: used ? grade(ratio) : '?', gradeSource: used ? 'provisional' : null };
         }).sort(byGrade);
+        const comparison = Object.keys(edited).map(id => tierList.find(card => card.id === id))
+            .filter(card => card?.before && card.measured)
+            .map(card => ({ id: card.id, name: card.name, tier: card.tier, edits: edited[card.id], before: card.before, after: card.measured }));
         const history = this.ai.history;
 
         // OP/UP 경고: 빈 칸보다 확실히 나쁜 카드(UP)와 티어 상위 5%이면서 확실히 도움이 되는 카드(OP)
@@ -412,7 +435,10 @@ export class Simulator {
             antiSynergies,
             packCombos,
             tierHeatmap,
-            performanceReport: this.performanceReport
+            comparison,
+            performanceReport: report,
+            // 측정은 있지만 지금과 다른 카드 수치로 잰 것이라 쓰지 않은 경우
+            staleMeasurement: !report && !!(this.performanceReport || this.baselineReport)
         };
     }
 }

@@ -5,7 +5,11 @@
  */
 
 import { Simulator } from './simulator.js';
-import { getAllCards, getAllPacks } from './cards.js';
+import { getAllCards, getAllPacks, listEditableFields, applyCardOverrides, getCardOverrides } from './cards.js';
+import { newWorldDataVersion } from './newworld-cards.js';
+
+// 카드 수치 수정은 이 브라우저에만 저장한다 (게임 데이터가 바뀌면 버린다)
+const OVERRIDES_STORAGE_KEY = 'card-simulator.card-overrides';
 import { PILOT_CARDS } from './performance.js';
 import { performanceDetail, performanceReportHTML } from './performance-view.js';
 
@@ -40,12 +44,71 @@ class App {
   }
 
   init() {
-    // 팝오버에서 카드 효과 설명·키워드를 찾기 위한 원본 카드 정보
+    this._loadStoredOverrides();
+    // 팝오버에서 카드 효과 설명·키워드를 찾기 위한 카드 정보 (수정 적용 후 다시 만든다)
     this._cardInfo = new Map(getAllCards().map(c => [String(c.id), c]));
     this._renderUI();
     this._bindEvents();
     this._bindCardPopover();
     this._renderCardPool();
+    this._renderOverrideSummary();
+  }
+
+  // ─── 카드 수치 수정 ───
+  _loadStoredOverrides() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(OVERRIDES_STORAGE_KEY) || 'null'); } catch { stored = null; }
+    if (!stored) return;
+    try {
+      if (stored.dataVersion !== newWorldDataVersion) throw new Error('카드 데이터가 바뀌었어요');
+      applyCardOverrides(stored.overrides);
+    } catch (error) {
+      console.warn('저장된 카드 수정을 적용하지 못해 버렸습니다:', error.message);
+      this._saveOverrides();
+      this._overrideNotice = '저장해 둔 카드 수정이 지금 카드 데이터와 맞지 않아 원래대로 돌렸어요.';
+    }
+  }
+
+  _saveOverrides() {
+    const overrides = getCardOverrides();
+    try {
+      if (Object.keys(overrides).length) localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify({ dataVersion: newWorldDataVersion, overrides }));
+      else localStorage.removeItem(OVERRIDES_STORAGE_KEY);
+    } catch (error) {
+      console.warn('카드 수정을 브라우저에 저장하지 못했습니다:', error.message);
+    }
+  }
+
+  // 수정 적용 → 저장 → 화면 갱신. 측정·학습 중에는 카드 데이터가 바뀌면 안 되므로 막는다.
+  _setOverrides(next) {
+    if (this.isRunning) throw new Error('측정이나 학습 대전이 끝난 뒤에 수정할 수 있어요.');
+    applyCardOverrides(next);
+    this._saveOverrides();
+    this._cardInfo = new Map(getAllCards().map(c => [String(c.id), c]));
+    this._renderCardPool();
+    if (this._hasResults) this._renderFinalResults(false);
+    this._renderOverrideSummary();
+  }
+
+  _renderOverrideSummary() {
+    const box = document.getElementById('override-summary');
+    if (!box) return;
+    const overrides = getCardOverrides(), ids = Object.keys(overrides);
+    const comparison = new Map((this._hasResults ? this.simulator.getAnalysis().comparison : []).map(row => [row.id, row]));
+    if (!ids.length) {
+      box.hidden = !this._overrideNotice;
+      box.innerHTML = this._overrideNotice ? `<p class="config-hint">${this._overrideNotice}</p>` : '';
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = `
+      <div class="override-head"><span class="field-label">수정한 카드 ${ids.length}장</span>
+        <button type="button" class="btn btn-secondary btn-small" data-overrides-reset-all>모두 원래대로</button></div>
+      <div class="override-chips">${ids.map(id => {
+        const row = comparison.get(id);
+        return `<button type="button" class="override-chip" data-card="${id}">${this._cardInfo.get(id)?.name || id}${row ? `<small>${row.before.grade} → ${row.after.grade}</small>` : ''}</button>`;
+      }).join('')}</div>
+      <p class="config-hint">수치를 바꾼 뒤 성능 측정을 다시 돌리면 수정 전과 비교해서 보여줘요. 학습 대전도 다시 돌려야 잠정 등급에 반영돼요.</p>`;
   }
 
   _renderUI() {
@@ -243,7 +306,9 @@ class App {
     container.prepend(el);
   }
 
-  _renderFinalResults() {
+  // switchTab: 학습·측정이 끝났을 때만 밸류 티어 탭으로 옮긴다 (카드 수정 후 갱신은 보던 탭 유지)
+  _renderFinalResults(switchTab = true) {
+    this._hasResults = true;
     const analysis = this.simulator.getAnalysis();
     this._renderTierList(analysis.tierList);
     this._renderWarnings(analysis.warnings);
@@ -251,7 +316,10 @@ class App {
     this._renderSynergyAnalysis(analysis.synergies, analysis.antiSynergies);
     this._renderCrossPackAnalysis(analysis.packCombos);
     this._renderTierHeatmap(analysis.tierHeatmap);
-    document.getElementById('performance-results').innerHTML = performanceReportHTML(analysis.performanceReport);
+    document.getElementById('performance-results').innerHTML = analysis.staleMeasurement
+      ? '<div class="empty-state"><p>카드 수치가 바뀌어서 이전 측정은 등급에 쓰지 않아요. 성능 측정을 다시 실행해 주세요.</p></div>'
+      : performanceReportHTML(analysis.performanceReport);
+    this._renderOverrideSummary();
     // 그래프 데이터를 저장 — 탭이 display:none이면 canvas 크기가 0이므로
     // 탭이 활성화될 때 렌더링하도록 지연
     this._pendingGraphData = analysis.history;
@@ -263,13 +331,14 @@ class App {
     this._renderBattleLog(this.simulator.battleLog);
     // 시뮬 완료 후 자동으로 밸류 티어 리스트 탭으로 전환
     const tierBtn = document.querySelector('[data-tab="tierlist"]');
-    if (tierBtn) tierBtn.click();
+    if (switchTab && tierBtn) tierBtn.click();
   }
 
   _renderTierList(tierList) {
     const container = document.getElementById('tier-list');
     if (!container) return;
 
+    const edited = getCardOverrides();
     const tiers = { S: [], A: [], B: [], C: [], D: [], F: [], '?': [] };
     for (const card of tierList) {
       tiers[card.valueTier]?.push(card);
@@ -286,6 +355,7 @@ class App {
             <div class="tier-card ${c.rarity}" data-card="${c.id}" tabindex="0">
               <span class="card-name">${c.name}</span>
               <span class="card-weight">T${c.tier} ${gradeLabel(c)}</span>
+              ${edited[c.id] ? '<span class="edited-badge">수정</span>' : ''}
               ${c.gradeSource === 'measured' ? '<span class="measured-badge">실측</span>' : ''}
             </div>
           `).join('')}
@@ -311,10 +381,10 @@ class App {
     drawer.setAttribute('aria-label', '카드 상세 정보');
     document.body.append(pop, backdrop, drawer);
 
-    let anchorEl = null, openedFrom = null;
+    let anchorEl = null, openedFrom = null, drawerCardId = null;
     const drawerOpen = () => document.body.classList.contains('drawer-open');
     const show = (el) => {
-      const card = this._cardStats?.get(el.dataset.card);
+      const card = this._cardFor(el.dataset.card);
       if (!card || el === anchorEl || drawerOpen()) return;
       anchorEl?.removeAttribute('aria-describedby');
       anchorEl = el;
@@ -328,18 +398,49 @@ class App {
       anchorEl = null;
       pop.classList.remove('visible');
     };
-    const openDrawer = (el) => {
-      const card = this._cardStats?.get(el.dataset.card);
-      if (!card) return;
-      hide();
-      openedFrom = el;
+    const renderDrawer = (id) => {
+      const card = this._cardFor(id);
+      if (!card) return false;
+      drawerCardId = id;
       drawer.innerHTML = `
         <div class="drawer-bar"><strong>${card.name}</strong>
           <button class="drawer-close" type="button" aria-label="닫기"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>${this._cardDetailHTML(card)}`;
+      return true;
+    };
+    // 카드 수정 후 열려 있는 패널을 새 수치로 다시 그린다
+    this._refreshDrawer = () => { if (drawerOpen() && drawerCardId) renderDrawer(drawerCardId); };
+    const openDrawer = (el) => {
+      hide();
+      if (!renderDrawer(el.dataset.card ?? el.dataset.cardOpen)) return;
+      openedFrom = el;
       drawer.scrollTop = 0;
       document.body.classList.add('drawer-open');
       drawer.querySelector('.drawer-close').focus();
+    };
+    const applyEdits = (form) => {
+      const id = form.dataset.cardId, edits = {}, error = form.querySelector('.edit-error');
+      for (const input of form.querySelectorAll('input[data-path]')) {
+        if (input.value.trim() === '' || !Number.isFinite(Number(input.value))) {
+          error.textContent = `${input.getAttribute('aria-label')}에 숫자를 입력해 주세요.`;
+          error.hidden = false;
+          input.focus();
+          return;
+        }
+        edits[input.dataset.path] = Number(input.value);
+      }
+      try {
+        this._setOverrides({ ...getCardOverrides(), [id]: edits });
+      } catch (failure) {
+        error.textContent = failure.message.replace('카드 수정 값이 올바르지 않습니다: ', '값을 확인해 주세요: ');
+        error.hidden = false;
+        return;
+      }
+      const scroll = drawer.scrollTop;
+      this._refreshDrawer();
+      drawer.scrollTop = scroll;
+      drawer.querySelector('.edit-done')?.removeAttribute('hidden');
+      drawer.querySelector('.edit-form button[type="submit"]')?.focus();
     };
     const closeDrawer = () => {
       if (!drawerOpen()) return;
@@ -348,6 +449,8 @@ class App {
       openedFrom = null;
     };
     const cardOf = (e) => e.target.closest?.('[data-card]');
+    // 클릭·Enter로 상세 패널을 여는 요소 (카드 풀 카드는 팝오버 없이 패널만 연다)
+    const openerOf = (e) => e.target.closest?.('[data-card], [data-card-open]');
 
     document.addEventListener('mouseover', (e) => { const el = cardOf(e); if (el) show(el); });
     document.addEventListener('mouseout', (e) => { const el = cardOf(e); if (el && !el.contains(e.relatedTarget)) hide(); });
@@ -355,15 +458,38 @@ class App {
     document.addEventListener('focusout', (e) => { if (cardOf(e)) hide(); });
     document.addEventListener('click', (e) => {
       if (e.target === backdrop || e.target.closest('.drawer-close')) return closeDrawer();
-      const el = cardOf(e);
-      if (el) openDrawer(el);
+      if (e.target.closest('[data-edit-reset]')) {
+        const overrides = getCardOverrides();
+        delete overrides[drawerCardId];
+        try { this._setOverrides(overrides); } catch (failure) { alert(failure.message); return; }
+        return this._refreshDrawer();
+      }
+      if (e.target.closest('[data-overrides-reset-all]')) {
+        if (!confirm('수정한 카드를 모두 원래 수치로 되돌릴까요?')) return;
+        try { this._setOverrides({}); } catch (failure) { alert(failure.message); }
+        return;
+      }
+      const el = openerOf(e);
+      if (el && !drawer.contains(el)) openDrawer(el);
+    });
+    document.addEventListener('submit', (e) => {
+      if (!e.target.matches('.edit-form')) return;
+      e.preventDefault();
+      applyEdits(e.target);
     });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { hide(); closeDrawer(); return; }
-      // 상세 패널이 열려 있으면 포커스가 패널 밖으로 나가지 않게 한다 (패널 안 조작 요소는 닫기 버튼뿐)
-      if (e.key === 'Tab' && drawerOpen()) { e.preventDefault(); drawer.querySelector('.drawer-close').focus(); return; }
-      const el = cardOf(e);
-      if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDrawer(el); }
+      // 상세 패널이 열려 있으면 Tab 포커스가 패널 안에서만 돈다
+      if (e.key === 'Tab' && drawerOpen()) {
+        const focusable = [...drawer.querySelectorAll('button, input')].filter(node => !node.disabled);
+        const first = focusable[0], last = focusable.at(-1);
+        if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        return;
+      }
+      const el = openerOf(e);
+      if (el && !drawer.contains(el) && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDrawer(el); }
     });
     window.addEventListener('scroll', hide, { passive: true });
   }
@@ -406,13 +532,60 @@ class App {
     `;
   }
 
-  // 상세 패널: 학습 대전 통계 전체, 성능 측정 상세, 티어 매치별 덱 승률
+  // 설명 문구는 일부만 숫자를 따라 바뀌므로, 바뀐 값을 따로 적어 준다
+  _editedNoteHTML(id) {
+    const changed = listEditableFields(id).filter(field => field.value !== field.original);
+    if (!changed.length) return '';
+    return `<p class="edit-note"><span class="edited-badge">수정</span>${changed.map(field => `${field.label} ${field.original} → <strong>${field.value}</strong>`).join(' · ')}</p>`;
+  }
+
+  // 팝오버·상세 패널용 카드 정보. 아직 결과를 그리기 전이면 지금 분석에서 찾는다.
+  _cardFor(id) {
+    return this._cardStats?.get(String(id)) ?? this.simulator.getAnalysis().tierList.find(card => card.id === id) ?? null;
+  }
+
+  // 수정 전(원본 측정) → 지금(수정 후 측정) 비교
+  _comparisonHTML(c) {
+    if (!c.before || !c.measured) return '';
+    const row = (label, rank) => `<div class="compare-row"><span>${label}</span>
+      <strong>${rank.grade} · 상위 ${Math.round(rank.top * 100)}% · ${points(rank.gain)}</strong></div>`;
+    return `<div class="pop-section">수정 전과 비교 (성능 측정)</div>${row('수정 전', c.before)}${row('지금', c.measured)}`;
+  }
+
+  // 코스트·효과 숫자 수정 칸. 측정·학습 중에는 막는다.
+  _editFormHTML(c) {
+    const fields = listEditableFields(c.id), edited = !!getCardOverrides()[c.id], locked = this.isRunning;
+    return `
+      <form class="edit-form" data-card-id="${c.id}" novalidate>
+        <div class="pop-section">수치 수정 <small>시뮬레이터 안에서만 적용돼요</small></div>
+        <div class="edit-fields">
+          ${fields.map(field => `
+            <label class="edit-field${field.value !== field.original ? ' changed' : ''}">
+              <span>${field.label}</span>
+              <input type="number" inputmode="decimal" step="${field.path === 'cost' ? 1 : 'any'}"${field.path === 'cost' ? ' min="0" max="20"' : ''}
+                data-path="${field.path}" value="${field.value}" aria-label="${field.label}"${locked ? ' disabled' : ''}>
+              <small>원본 ${field.original}</small>
+            </label>`).join('')}
+        </div>
+        <p class="edit-error" role="alert" hidden></p>
+        <p class="edit-done" role="status" hidden>적용했어요. 성능 측정을 다시 돌리면 수정 전과 비교해서 보여줘요.</p>
+        <div class="edit-actions">
+          <button type="button" class="btn btn-secondary" data-edit-reset${!edited || locked ? ' disabled' : ''}>원래대로</button>
+          <button type="submit" class="btn btn-primary"${locked ? ' disabled' : ''}>적용</button>
+        </div>
+        ${locked ? '<p class="config-hint">측정이나 학습 대전이 끝난 뒤에 수정할 수 있어요.</p>' : ''}
+      </form>`;
+  }
+
+  // 상세 패널: 학습 대전 통계 전체, 성능 측정 상세, 티어 매치별 덱 승률, 수치 수정
   _cardDetailHTML(c) {
     const pct = (v) => (v != null ? `${v}%` : '–');
     const matches = Object.entries(c.byTierMatch || {}).sort(([a], [b]) => a.localeCompare(b));
     return `
       ${cardArtHTML(c.id, 'pop-art', false)}
       ${this._cardCoreHTML(c)}
+      ${this._comparisonHTML(c)}
+      ${this._editFormHTML(c)}
       <div class="pop-section">학습 대전 통계</div>
       <dl class="pop-stats">
         ${this._learningStats(c).map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
@@ -441,6 +614,7 @@ class App {
         <span class="pop-grade" style="--tier: ${TIER_COLORS[c.valueTier] || TIER_COLORS['?']}">${c.valueTier}</span>
       </div>
       ${info?.description ? `<p class="pop-desc">${info.description}</p>` : ''}
+      ${this._editedNoteHTML(c.id)}
       ${info?.keywords?.length ? `<div class="pop-keywords">${info.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('')}</div>` : ''}
       ${c.measured ? `<div class="pop-hero"><span>실측 · T${c.tier} ${gradeLabel(c)}
           <small>순위 범위 상위 ${Math.round(c.measured.topRange[0] * 100)}~${Math.round(c.measured.topRange[1] * 100)}% · 95% ${points(c.measured.low)} ~ ${points(c.measured.high)}</small></span>
@@ -673,7 +847,7 @@ class App {
     const container = document.getElementById('card-pool');
     if (!container) return;
 
-    const cards = getAllCards();
+    const cards = getAllCards(), edited = getCardOverrides();
     const grouped = {};
     for (const card of cards) {
       if (!grouped[card.pack]) grouped[card.pack] = [];
@@ -685,11 +859,11 @@ class App {
         <h3 class="pool-pack-name">${pack}</h3>
         <div class="pool-cards">
           ${cards.map(c => `
-            <div class="pool-card ${c.rarity} type-${c.type}">
+            <div class="pool-card ${c.rarity} type-${c.type}" data-card-open="${c.id}" tabindex="0">
               ${cardArtHTML(c.id, 'pool-art')}
               <div class="pool-card-header">
                 <span class="pool-card-cost">${c.cost}</span>
-                <span class="pool-card-name">${c.name}</span>
+                <span class="pool-card-name">${c.name}${edited[c.id] ? ' <span class="edited-badge">수정</span>' : ''}</span>
                 <span class="pool-card-type">${c.type}</span>
               </div>
               <div class="pool-card-desc">${c.description}</div>

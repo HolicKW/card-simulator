@@ -6,7 +6,7 @@
  * 실측 성능은 performance.js의 고정 정책 교체 실험에서 별도로 구한다.
  */
 
-import { getAllCards, getCardsByPack } from './cards.js';
+import { getAllCards, getCardsByPack, getCardOverrides, overridesKey } from './cards.js';
 import { newWorldDataVersion } from './newworld-cards.js';
 
 export const LEARNING_RULESET_VERSION = 'selection-battle-v3';
@@ -331,6 +331,7 @@ export class CardAI {
             schemaVersion: 3,
             rulesetVersion: LEARNING_RULESET_VERSION,
             dataVersion: newWorldDataVersion,
+            cardOverrides: getCardOverrides(),
             generation: this.generation,
             weights: Object.fromEntries(this.cardWeights),
             cumulativeStats: Object.fromEntries(this.cumulativeStats),
@@ -344,6 +345,9 @@ export class CardAI {
             || data.dataVersion !== newWorldDataVersion) {
             throw new Error('현재 NewWorld 전투 규칙/카드 데이터와 다른 학습 파일입니다. 기존 파일은 보관하고 새로 학습해 주세요.');
         }
+        // 이전 파일은 수정 없이 학습한 것이다
+        if (overridesKey(data.cardOverrides ?? {}) !== overridesKey(getCardOverrides()))
+            throw new Error('지금과 다른 카드 수치로 학습한 파일입니다. 같은 카드 수정 상태에서 불러와 주세요.');
         const weights = Object.entries(data.weights || {});
         if (!Number.isInteger(data.generation) || data.generation < 0 || !Number.isFinite(data.learningRate)
             || data.learningRate <= 0 || data.learningRate > 1 || !Array.isArray(data.history)

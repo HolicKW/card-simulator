@@ -1,6 +1,6 @@
 import { BattleEngine } from './engine.js';
 import { CardAI } from './ai.js';
-import { getAllCards, getCardById } from './cards.js';
+import { getAllCards, getCardById, getCardOverrides, validateCardOverrides } from './cards.js';
 import { cloneCard } from './battle-rules.js';
 import { newWorldDataVersion } from './newworld-cards.js';
 
@@ -405,7 +405,8 @@ export class PerformanceEvaluator {
         benchmarkDecks(ids[0], 'general', deckSize);
         this.running = true;
         const report = { evaluationVersion: EVALUATION_VERSION, policyVersion: POLICY_VERSION, dataVersion: newWorldDataVersion,
-            config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns, contexts }, status: 'running',
+            // overrides: 측정 당시의 카드 수치 수정 (워커도 같은 수정을 적용한다)
+            config: { cardIds: ids, seeds, probeSamples, seed, deckSize, maxTurns, contexts, overrides: getCardOverrides() }, status: 'running',
             environments: ENVIRONMENTS, cards: {}, tierTargets: {}, targetSource: 'tier-median-benefit' };
         const total = ids.length * seeds * contexts.length;
         try {
@@ -493,10 +494,13 @@ export function validatePerformanceReport(report) {
         || !Number.isInteger(config.maxTurns) || config.maxTurns < 1 || config.maxTurns > 200)
         throw new Error('유효하지 않은 성능 평가 설정입니다.');
     const contexts = contextsOf(config);
+    // 이전 파일은 수정 없이 측정한 것이다. 기록된 수정도 지금 카드 데이터에 맞는지 확인한다.
+    const overrides = validateCardOverrides(config.overrides ?? {});
     if (!Array.isArray(contexts) || contexts[0] !== 'general' || contexts.some(context => !CONTEXTS.includes(context))
         || new Set(contexts).size !== contexts.length)
         throw new Error('유효하지 않은 성능 평가 설정입니다.');
     const clean = JSON.parse(JSON.stringify(report));
+    clean.config.overrides = overrides;
     for (const [id, result] of Object.entries(report.cards)) {
         if (!config.cardIds.includes(id) || !result.probes) throw new Error('유효하지 않은 카드 성능 데이터입니다.');
         for (const scenario of SCENARIOS) {
