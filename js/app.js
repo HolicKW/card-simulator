@@ -295,17 +295,27 @@ class App {
   }
 
   // ─── 카드 팝오버 (밸류 티어 칩 · 히트맵 셀 공용) ───
+  // 호버하면 요약 팝오버, 클릭(Enter·Space)하면 스크롤되는 상세 패널을 연다.
+  // 밸류 티어 칩 · 히트맵 셀 · 성능 측정 표의 [data-card] 요소가 같이 쓴다.
   _bindCardPopover() {
     const pop = document.createElement('div');
     pop.id = 'card-popover';
     pop.className = 'card-popover';
     pop.setAttribute('role', 'tooltip');
-    document.body.appendChild(pop);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'drawer-backdrop';
+    const drawer = document.createElement('aside');
+    drawer.className = 'card-drawer';
+    drawer.setAttribute('role', 'dialog');
+    drawer.setAttribute('aria-modal', 'true');
+    drawer.setAttribute('aria-label', '카드 상세 정보');
+    document.body.append(pop, backdrop, drawer);
 
-    let anchorEl = null;
+    let anchorEl = null, openedFrom = null;
+    const drawerOpen = () => document.body.classList.contains('drawer-open');
     const show = (el) => {
       const card = this._cardStats?.get(el.dataset.card);
-      if (!card || el === anchorEl) return;
+      if (!card || el === anchorEl || drawerOpen()) return;
       anchorEl?.removeAttribute('aria-describedby');
       anchorEl = el;
       pop.innerHTML = this._popoverHTML(card);
@@ -318,13 +328,43 @@ class App {
       anchorEl = null;
       pop.classList.remove('visible');
     };
+    const openDrawer = (el) => {
+      const card = this._cardStats?.get(el.dataset.card);
+      if (!card) return;
+      hide();
+      openedFrom = el;
+      drawer.innerHTML = `
+        <div class="drawer-bar"><strong>${card.name}</strong>
+          <button class="drawer-close" type="button" aria-label="닫기"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>${this._cardDetailHTML(card)}`;
+      drawer.scrollTop = 0;
+      document.body.classList.add('drawer-open');
+      drawer.querySelector('.drawer-close').focus();
+    };
+    const closeDrawer = () => {
+      if (!drawerOpen()) return;
+      document.body.classList.remove('drawer-open');
+      openedFrom?.focus({ preventScroll: true });
+      openedFrom = null;
+    };
     const cardOf = (e) => e.target.closest?.('[data-card]');
 
     document.addEventListener('mouseover', (e) => { const el = cardOf(e); if (el) show(el); });
     document.addEventListener('mouseout', (e) => { const el = cardOf(e); if (el && !el.contains(e.relatedTarget)) hide(); });
     document.addEventListener('focusin', (e) => { const el = cardOf(e); if (el) show(el); });
     document.addEventListener('focusout', (e) => { if (cardOf(e)) hide(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    document.addEventListener('click', (e) => {
+      if (e.target === backdrop || e.target.closest('.drawer-close')) return closeDrawer();
+      const el = cardOf(e);
+      if (el) openDrawer(el);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { hide(); closeDrawer(); return; }
+      // 상세 패널이 열려 있으면 포커스가 패널 밖으로 나가지 않게 한다 (패널 안 조작 요소는 닫기 버튼뿐)
+      if (e.key === 'Tab' && drawerOpen()) { e.preventDefault(); drawer.querySelector('.drawer-close').focus(); return; }
+      const el = cardOf(e);
+      if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDrawer(el); }
+    });
     window.addEventListener('scroll', hide, { passive: true });
   }
 
@@ -341,20 +381,58 @@ class App {
     pop.style.left = `${left}px`;
   }
 
-  _popoverHTML(c) {
+  // 학습 대전 통계 (요약은 앞의 4개만)
+  _learningStats(c) {
     const pct = (v) => (v != null ? `${v}%` : '–');
-    const matches = Object.entries(c.byTierMatch || {}).sort(([a], [b]) => a.localeCompare(b));
-    const stats = [
+    return [
       ['카드 사용 전투', pct(c.playRate)],
       ['덱 승률', pct(c.deckWinRate)],
       ['게임당 사용', c.avgPlaysPerGame != null ? `${c.avgPlaysPerGame}회` : '–'],
-      ['AI 선택 가중치', c.weight ?? '–'],
       ['덱 편입', `${c.deckInclusions || 0}회`],
+      ['AI 선택 가중치', c.weight ?? '–'],
       ['실사용', `${c.totalUses || 0}회`],
     ];
-    const info = this._cardInfo.get(String(c.id));
+  }
+
+  // 호버 요약: 화면 안에 들어오도록 핵심만 보여 준다
+  _popoverHTML(c) {
     return `
       ${cardArtHTML(c.id, 'pop-art', false)}
+      ${this._cardCoreHTML(c)}
+      <dl class="pop-stats">
+        ${this._learningStats(c).slice(0, 4).map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+      </dl>
+      <p class="pop-hint">클릭하면 자세히 볼 수 있어요</p>
+    `;
+  }
+
+  // 상세 패널: 학습 대전 통계 전체, 성능 측정 상세, 티어 매치별 덱 승률
+  _cardDetailHTML(c) {
+    const pct = (v) => (v != null ? `${v}%` : '–');
+    const matches = Object.entries(c.byTierMatch || {}).sort(([a], [b]) => a.localeCompare(b));
+    return `
+      ${cardArtHTML(c.id, 'pop-art', false)}
+      ${this._cardCoreHTML(c)}
+      <div class="pop-section">학습 대전 통계</div>
+      <dl class="pop-stats">
+        ${this._learningStats(c).map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+      </dl>
+      ${performanceDetail(c.performance)}
+      ${matches.length ? `
+        <div class="pop-section">티어 매치별 덱 승률 (학습 대전)</div>
+        ${matches.map(([tm, d]) => `
+          <div class="pop-bar-row">
+            <span>${tm}</span>
+            <span class="rate-bar"><span class="rate-fill" style="width:${d.winRate ?? 0}%;background:${rateColor(d.winRate)}"></span></span>
+            <span>${pct(d.winRate)}<small>${d.inclusions}판</small></span>
+          </div>`).join('')}` : ''}
+    `;
+  }
+
+  // 이름·효과·등급 (요약과 상세 공용)
+  _cardCoreHTML(c) {
+    const info = this._cardInfo.get(String(c.id));
+    return `
       <div class="pop-head">
         <div>
           <strong class="pop-name">${c.name}</strong>
@@ -368,18 +446,6 @@ class App {
           <small>순위 범위 상위 ${Math.round(c.measured.topRange[0] * 100)}~${Math.round(c.measured.topRange[1] * 100)}% · 95% ${points(c.measured.low)} ~ ${points(c.measured.high)}</small></span>
           <strong>${points(c.measured.gain)}</strong></div>`
         : `<div class="pop-hero"><span>${c.gradeSource === 'provisional' ? '잠정 · 학습 대전 기준' : '미평가'}</span><strong>${gradeLabel(c)}</strong></div>`}
-      <dl class="pop-stats">
-        ${stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
-      </dl>
-      ${performanceDetail(c.performance)}
-      ${matches.length ? `
-        <div class="pop-section">티어별 덱 승률</div>
-        ${matches.map(([tm, d]) => `
-          <div class="pop-bar-row">
-            <span>${tm}</span>
-            <span class="rate-bar"><span class="rate-fill" style="width:${d.winRate ?? 0}%;background:${rateColor(d.winRate)}"></span></span>
-            <span>${pct(d.winRate)}<small>${d.inclusions}판</small></span>
-          </div>`).join('')}` : ''}
     `;
   }
 
